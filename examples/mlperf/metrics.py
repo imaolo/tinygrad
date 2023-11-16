@@ -2,6 +2,7 @@ import re
 import string
 from collections import Counter
 import numpy as np
+from tinygrad.tensor import Tensor
 
 def levenshtein(a, b):
   n, m = len(a), len(b)
@@ -36,14 +37,26 @@ def one_hot(arr, num_classes=3):
   return arr
 
 def get_dice_score(prediction, target, channel_axis=1, smooth_nr=1e-6, smooth_dr=1e-6):
-  channel_axis, reduce_axis = 1, tuple(range(2, len(prediction.shape)))
+  reduce_axis = tuple(range(2, len(prediction.shape)))
   prediction = prediction.argmax(axis=channel_axis)
+  target = np.squeeze(target, axis=channel_axis)
   prediction, target= one_hot(prediction)[:, 1:], one_hot(target)[:, 1:]
   intersection = np.sum(prediction * target, axis=reduce_axis)
   target_sum = np.sum(target, axis=reduce_axis)
   prediction_sum = np.sum(prediction, axis=reduce_axis)
   result = (2.0 * intersection + smooth_nr) / (target_sum + prediction_sum + smooth_dr)
   return result[0]
+
+def dice_ce_loss(y_pred, y_true, channel_axis=1, smooth_nr=1e-6, smooth_dr=1e-6):
+  assert isinstance(y_pred, Tensor), "prediction must be a tensor for loss function"
+  y_true = Tensor(one_hot(np.squeeze(y_true, axis=channel_axis)), requires_grad=False)
+  cross_entropy = -y_true.mul(y_pred.clip(1e-10, 1).log()).mean()
+  # cant use get_dice_score because it is not tensorized, and it one hot encodes the prediction
+  intersection = Tensor.sum(y_pred*y_true, axis=(2, 3, 4))
+  union = Tensor.sum(y_pred, axis=(2, 3, 4)) + Tensor.sum(y_true, axis=(2, 3, 4))
+  dice_loss = 1 - ((2. * intersection + 1e-6) / (union + 1e-6))
+  loss = (dice_loss + cross_entropy) / 2
+  return loss.mean(axis=1)
 
 def normalize_string(s):
   s = "".join(c for c in s.lower() if c not in string.punctuation)
