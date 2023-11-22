@@ -1,18 +1,27 @@
 import ctypes
 import numpy as np
 from collections import defaultdict, deque
-from typing import TypeVar, Type, Any, Dict, Deque, Tuple
+from typing import TypeVar, Type, Any, Dict, Deque, Tuple, Set
 from tinygrad.helpers import DType, dtypes, prod, GlobalCounters, ImageDType
+from weakref import ref, ReferenceType, WeakSet
+
+import weakref
+from collections import deque
 
 _T = TypeVar("_T")
 class RawBuffer:  # pylint: disable=abstract-method
+  live_buffers_order: Dict[str, Deque[Any]] = defaultdict(deque)
   def __init__(self, size:int, dtype:DType, buf:Any=None, allocator:Any=None, **kwargs):
+    self.kwargs = kwargs
     self.size: int = size
     self.dtype: DType = dtype
-    self._buf = buf if buf is not None else (allocator(size, dtype, **kwargs) if allocator else None) # If buf is provided, use it. Otherwise try to allocate from the allocator.
+    self._device = kwargs.get('device', None)
+    self._cpu_buf = None
     self._memsz: int = size*dtype.itemsize
     self._allocator = allocator if allocator and hasattr(allocator, 'free') else None
-    self._device = kwargs.get('device', None)
+    try: self._buf = buf if buf is not None else (allocator(size, dtype, self._device, **kwargs) if allocator else None) # If buf is provided, use it. Otherwise try to allocate from the allocator.
+    except: self.swapOut()
+    self.live_buffers_order[self._device].append(ref(self))
     GlobalCounters.mem_used += self._memsz
   def __del__(self):  # NOTE: if it fails on init (bad dtype), it won't have a _memsz
     if hasattr(self, '_memsz'): GlobalCounters.mem_used -= self._memsz
@@ -25,6 +34,19 @@ class RawBuffer:  # pylint: disable=abstract-method
   @classmethod
   def fromCPU(cls:Type[_T], x:np.ndarray) -> _T: raise NotImplementedError("must be implemented")
   def toCPU(self) -> np.ndarray: raise NotImplementedError("must be implemented")
+
+  def swapOut(self):
+    assert self._allocator
+    while len(self.live_buffers_order[self._device]) and self._memsz > self._allocator._get_cur_free_space(self._device):
+      swap_buf = self.live_buffers_order[self._device].popleft()()
+      if swap_buf and not isinstance(swap_buf._buf, np.ndarray):
+        swap_buf._cpu_buf = swap_buf.toCPU()
+        swap_buf._allocator.free(swap_buf._buf)
+        swap_buf._buf = None # drop the buf, it's cleaner
+      try: self._allocator.ensure_has_free_space(self._memsz, self._device)
+      except: pass
+    self._allocator.ensure_has_free_space(self._memsz, self._device)
+    self._buf = self._allocator(self.size, self.dtype, self._device, **self.kwargs)
 
 class RawBufferCopyIn(RawBuffer):
   def _copyin(self, x:np.ndarray) -> None: raise NotImplementedError("must be implemented")
