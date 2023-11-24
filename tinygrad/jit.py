@@ -87,8 +87,9 @@ class TinyJit(Generic[ReturnType]):
             self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
         else:
           for j, output_idx in self.output_replace.items():
-            self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-            self.jit_cache[j].rawbufs[0] = self.ret[output_idx].lazydata.base.realized
+            if self.jit_cache[j].rawbufs[0] is not None:
+              self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
+              self.jit_cache[j].rawbufs[0] = self.ret[output_idx].lazydata.base.realized
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
