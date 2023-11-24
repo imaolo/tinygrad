@@ -77,15 +77,16 @@ class TinyJit(Generic[ReturnType]):
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
       assert self.expected_name_sts_dtype == expected_name_sts_dtype, f"mismatch of sts, expected {self.expected_name_sts_dtype} got {expected_name_sts_dtype}"
       for (j,i),input_idx in self.input_replace.items(): self.jit_cache[j].rawbufs[i] = input_rawbuffers[input_idx]
-      if not isinstance(self.ret, tuple):
-        assert len(self.output_replace.values()) == 1
-        j = list(self.output_replace.keys())[0]
-        self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-        self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
-      else:
-        for j, output_idx in self.output_replace.items():
-          self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-          self.jit_cache[j].rawbufs[0] = self.ret[output_idx].lazydata.base.realized
+      if self.ret is not None:
+        if not isinstance(self.ret, tuple):
+          assert len(self.output_replace.values()) == 1
+          j = list(self.output_replace.keys())[0]
+          self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
+          self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
+        else:
+          for j, output_idx in self.output_replace.items():
+            self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
+            self.jit_cache[j].rawbufs[0] = self.ret[output_idx].lazydata.base.realized
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
@@ -104,7 +105,7 @@ class TinyJit(Generic[ReturnType]):
           if DEBUG >= 1: print(f"graph create failed {e}")
 
       self.input_replace = get_input_replace(self.jit_cache, input_rawbuffers)
-      self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, Tuple) else (self.ret, ))
+      if self.ret is not None: self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, Tuple) else (self.ret, ))
     elif self.cnt == 0:
       # jit ignore
       self.ret = self.fxn(*args, **kwargs)
