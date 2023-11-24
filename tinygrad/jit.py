@@ -51,6 +51,7 @@ class TinyJit(Generic[ReturnType]):
   def reset(self):
     self.jit_cache: List[JitItem] = []
     self.input_replace: Dict[Tuple[int, int], int] = {}
+    self.output_replace: Dict[int, int] = {}
     self.cnt: int = 0
     self.ret: Optional[ReturnType] = None
     self.expected_vals: Optional[Tuple[Variable, ...]] = None
@@ -72,9 +73,6 @@ class TinyJit(Generic[ReturnType]):
     var_vals: Dict[Variable, int] = merge_dicts([arg.lazydata.st.var_vals for arg in input_tensors.values()] + [dict(x.unbind() for x in itertools.chain(args, kwargs.values()) if isinstance(x, Variable))])
     expected_vals = tuple(var_vals.keys())
 
-    # for lint
-    self.output_replace = None
-
     if self.cnt >= 2:
       # jit exec
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
@@ -84,7 +82,9 @@ class TinyJit(Generic[ReturnType]):
         if not isinstance(self.ret, tuple):
           assert len(self.output_replace.values()) == 1
           j = list(self.output_replace.keys())[0]
+          og = self.ret.lazydata.base.realized
           self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
+          del og
           self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
         else:
           for j, output_idx in self.output_replace.items():
