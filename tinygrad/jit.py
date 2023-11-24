@@ -50,7 +50,16 @@ class TinyJit(Generic[ReturnType]):
       # there should be a better way to make a copy of a device buffer
       # we really dont need a copy, we just need a buffer of the same size...
       # we could use more functionality from LRUAllocator and RawBuffer
-      for ji in self.jit_fxn.jit_cache: ji.rawbufs[0]._buf = ji.rawbufs[0].fromCPU(ji.rawbufs[0].toCPU().copy())._buf
+      for ji in self.jit_fxn.jit_cache:
+        # The problem right now is that the previous ._buf will be leaked?
+        # and it is not guaranteed that we will have an allocator available
+        # this is already a big hack, there is likely not avoiding the refactor...
+        if ji.rawbufs[0]:
+          _buf = ji.rawbufs[0]._buf
+          ji.rawbufs[0]._buf = ji.rawbufs[0].fromCPU(ji.rawbufs[0].toCPU().copy())._buf
+          # assume that if there is no allocator, cleanup happens implicitly
+          if ji.rawbufs[0]._allocator: ji.rawbufs[0]._allocator.free(_buf)
+          # ji.rawbufs[0]._allocator.free(_buf)
       self.jit_fxn(input_rawbuffers, var_vals, DEBUG>=2)
     elif self.cnt == 1:
       self.expected_vals, self.expected_sts_dtype = expected_vals, expected_sts_dtype
