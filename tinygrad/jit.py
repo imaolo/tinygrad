@@ -24,6 +24,17 @@ def get_input_replace(jit_cache: List[JitItem], input_rawbuffers:List[RawBuffer]
         input_replace[(j,i)] = input_rawbuffers.index(a)
   assert len(set(input_replace.values())) == len(input_rawbuffers), "some input tensors not found"
   return input_replace
+def get_output_replace(jit_cache: List[JitItem], fxn_ret:Tuple[Tensor]) -> Dict[Tuple[int, int], int]:
+  raw_retbufs = [t.lazydata.realized if isinstance(t, Tensor) else None for t in fxn_ret if isinstance(t, Tensor)]
+  output_replace: Dict[Tuple[int], int] = {}
+  for j,ji in enumerate(jit_cache):
+    for i,a in enumerate(ji.rawbufs):
+      if a in raw_retbufs:
+        assert i == 0, f"output buffer expected at index 0 only. found at {i}"
+        output_replace[j] = raw_retbufs.index(a)
+  assert len(set(output_replace.values())) == len([t for t in fxn_ret if isinstance(t, Tensor)]), f"some output tensors not found {len(set(output_replace))}, {len([t for t in fxn_ret if isinstance(t, Tensor)])}"
+  return output_replace
+
 def get_jc_idxs_with_updatable_launch_dims(jit_cache: List[JitItem]) -> List[int]:
   return [j for j,ji in enumerate(jit_cache) if isinstance(ji.prg, CompiledASTRunner) and ((ji.prg.global_size and not all_int(tuple(ji.prg.global_size))) or (ji.prg.local_size and not all_int(tuple(ji.prg.local_size))))]
 def get_jc_idxs_with_updatable_var_vals(jit_cache: List[JitItem]) -> List[int]:
@@ -66,6 +77,9 @@ class TinyJit(Generic[ReturnType]):
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
       assert self.expected_name_sts_dtype == expected_name_sts_dtype, f"mismatch of sts, expected {self.expected_name_sts_dtype} got {expected_name_sts_dtype}"
       for (j,i),input_idx in self.input_replace.items(): self.jit_cache[j].rawbufs[i] = input_rawbuffers[input_idx]
+      if not isinstance(self.ret, tuple): self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0]
+      else: 
+        for j, output_idx in self.output_replace.items(): self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0]
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
