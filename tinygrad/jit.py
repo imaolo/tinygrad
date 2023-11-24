@@ -47,8 +47,10 @@ class TinyJit(Generic[ReturnType]):
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
       assert self.expected_sts_dtype == expected_sts_dtype, f"mismatch of sts, expected {self.expected_sts_dtype} got {expected_sts_dtype}"
       assert self.jit_fxn, "didn't get jitted?"
-      ji = self.jit_fxn.jit_cache[-1]
-      ji.rawbufs[0]._buf = ji.rawbufs[0].fromCPU(ji.rawbufs[0].toCPU().copy())._buf # there should be a better way to make a copy of a device buffer
+      # there should be a better way to make a copy of a device buffer
+      # we really dont need a copy, we just need a buffer of the same size...
+      # we could use more functionality from LRUAllocator and RawBuffer
+      for ji in self.jit_fxn.jit_cache: ji.rawbufs[0]._buf = ji.rawbufs[0].fromCPU(ji.rawbufs[0].toCPU().copy())._buf
       self.jit_fxn(input_rawbuffers, var_vals, DEBUG>=2)
     elif self.cnt == 1:
       self.expected_vals, self.expected_sts_dtype = expected_vals, expected_sts_dtype
