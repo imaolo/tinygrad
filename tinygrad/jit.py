@@ -82,9 +82,7 @@ class TinyJit(Generic[ReturnType]):
         if not isinstance(self.ret, tuple):
           assert len(self.output_replace.values()) == 1
           j = list(self.output_replace.keys())[0]
-          og = self.ret.lazydata.base.realized
           self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-          del og
           self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
         else:
           for j, output_idx in self.output_replace.items():
