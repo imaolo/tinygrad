@@ -80,8 +80,8 @@ class TinyJit(Generic[ReturnType]):
       for (j,i),input_idx in self.input_replace.items(): self.jit_cache[j].rawbufs[i] = input_rawbuffers[input_idx]
       ret = (self.ret, ) if not isinstance(self.ret, tuple) else self.ret
       for j, output_idx in self.output_replace.items():
-        assert self.jit_cache[j].rawbufs[0] is not None, "Must be populated"
-        self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy()) #type:ignore
+        self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU((old_buf := self.jit_cache[j].rawbufs[0]).toCPU().copy()) # type:ignore
+        del old_buf
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
