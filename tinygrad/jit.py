@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, List, Tuple, Dict, cast, Union, Optional, TypeVar, Generic
+from typing import Callable, List, Tuple, Dict, cast, Union, Optional, TypeVar, Generic, Any
 import functools, itertools, operator
 from tinygrad.helpers import DEBUG, DType, merge_dicts, getenv, all_int
 from tinygrad.ops import RawBuffer, Device, JITRunner, CompiledASTRunner
@@ -24,7 +24,7 @@ def get_input_replace(jit_cache: List[JitItem], input_rawbuffers:List[RawBuffer]
         input_replace[(j,i)] = input_rawbuffers.index(a)
   assert len(set(input_replace.values())) == len(input_rawbuffers), "some input tensors not found"
   return input_replace
-def get_output_replace(jit_cache: List[JitItem], fxn_ret:Tuple[Tensor]) -> Dict[int, int]:
+def get_output_replace(jit_cache: List[JitItem], fxn_ret:Tuple[Any]) -> Dict[int, int]:
   output_replace: Dict[int, int] = {}
   raw_retbufs = [t.lazydata.realized if isinstance(t, Tensor) else None for t in fxn_ret if isinstance(t, Tensor)]
   for j,ji in enumerate(jit_cache):
@@ -82,7 +82,7 @@ class TinyJit(Generic[ReturnType]):
       ret = (self.ret, ) if not isinstance(self.ret, tuple) else self.ret
       for j, output_idx in self.output_replace.items():
         assert self.jit_cache[j].rawbufs[0] is not None, "Must be populated"
-        self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
+        self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy()) #type:ignore
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
@@ -101,11 +101,11 @@ class TinyJit(Generic[ReturnType]):
           if DEBUG >= 1: print(f"graph create failed {e}")
 
       self.input_replace = get_input_replace(self.jit_cache, input_rawbuffers)
-      self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, Tuple) else (self.ret, ))
+      self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, tuple) else (self.ret, ))
     elif self.cnt == 0:
       # jit ignore
       self.ret = self.fxn(*args, **kwargs)
-      assert isinstance(self.ret, (tuple, Tensor)) or self.ret is None, "Jitted function return value must be None, tuple, or Tensor"
+      assert isinstance(self.ret, (tuple, Tensor)) or self.ret is None, f"Jitted function return value must be None, tuple, or Tensor. Got {type(self.ret)}"
 
     # clear jit inputs
     for (j,i) in self.input_replace.keys(): self.jit_cache[j].rawbufs[i] = None
