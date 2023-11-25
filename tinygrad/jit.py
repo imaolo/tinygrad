@@ -105,7 +105,7 @@ class TinyJit(Generic[ReturnType]):
     elif self.cnt == 0:
       # jit ignore
       self.ret = self.fxn(*args, **kwargs)
-      assert isinstance(self.ret, (tuple, Tensor)) or self.ret is None, f"Jitted function return value must be None, tuple, or Tensor. Got {type(self.ret)}"
+      assert isinstance(self.ret, (tuple, Tensor, list)) or self.ret is None, f"Jitted function return value must be None, tuple, list, or Tensor. Got {type(self.ret)}"
 
     # clear jit inputs
     for (j,i) in self.input_replace.keys(): self.jit_cache[j].rawbufs[i] = None
