@@ -29,7 +29,6 @@ def get_output_replace(jit_cache: List[JitItem], fxn_ret:Tuple[Any]) -> Dict[int
   raw_retbufs = [t.lazydata.realized if isinstance(t, Tensor) else None for t in fxn_ret if isinstance(t, Tensor)]
   for j,ji in enumerate(jit_cache):
     for i,a in enumerate(ji.rawbufs):
-      assert a is not None
       if a in raw_retbufs:
         assert i == 0, f"output buffer expected at index 0 only. found at {i}"
         output_replace[j] = raw_retbufs.index(a)
