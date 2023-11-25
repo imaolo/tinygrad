@@ -25,10 +25,11 @@ def get_input_replace(jit_cache: List[JitItem], input_rawbuffers:List[RawBuffer]
   assert len(set(input_replace.values())) == len(input_rawbuffers), "some input tensors not found"
   return input_replace
 def get_output_replace(jit_cache: List[JitItem], fxn_ret:Tuple[Tensor]) -> Dict[int, int]:
-  raw_retbufs = [t.lazydata.realized if isinstance(t, Tensor) else None for t in fxn_ret if isinstance(t, Tensor)]
   output_replace: Dict[int, int] = {}
+  raw_retbufs = [t.lazydata.realized if isinstance(t, Tensor) else None for t in fxn_ret if isinstance(t, Tensor)]
   for j,ji in enumerate(jit_cache):
     for i,a in enumerate(ji.rawbufs):
+      assert a is not None
       if a in raw_retbufs:
         assert i == 0, f"output buffer expected at index 0 only. found at {i}"
         output_replace[j] = raw_retbufs.index(a)
@@ -78,18 +79,10 @@ class TinyJit(Generic[ReturnType]):
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
       assert self.expected_name_sts_dtype == expected_name_sts_dtype, f"mismatch of sts, expected {self.expected_name_sts_dtype} got {expected_name_sts_dtype}"
       for (j,i),input_idx in self.input_replace.items(): self.jit_cache[j].rawbufs[i] = input_rawbuffers[input_idx]
-      if self.ret is not None:
-        if not isinstance(self.ret, tuple):
-          assert len(self.output_replace.values()) == 1
-          if self.jit_cache[j].rawbufs[0] is not None:
-            j = list(self.output_replace.keys())[0]
-            self.ret.lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-            self.jit_cache[j].rawbufs[0] = self.ret.lazydata.base.realized
-        else:
-          for j, output_idx in self.output_replace.items():
-            if self.jit_cache[j].rawbufs[0] is not None:
-              self.ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
-              self.jit_cache[j].rawbufs[0] = self.ret[output_idx].lazydata.base.realized
+      ret = (self.ret, ) if not isinstance(self.ret, tuple) else self.ret
+      for j, output_idx in self.output_replace.items():
+        assert self.jit_cache[j].rawbufs[0] is not None, "Must be populated"
+        self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy())
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
@@ -108,10 +101,11 @@ class TinyJit(Generic[ReturnType]):
           if DEBUG >= 1: print(f"graph create failed {e}")
 
       self.input_replace = get_input_replace(self.jit_cache, input_rawbuffers)
-      if self.ret is not None: self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, Tuple) else (self.ret, ))
+      self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, Tuple) else (self.ret, ))
     elif self.cnt == 0:
       # jit ignore
       self.ret = self.fxn(*args, **kwargs)
+      assert isinstance(self.ret, (tuple, Tensor)) or self.ret is None, "Jitted function return value must be None, tuple, or Tensor"
 
     # clear jit inputs
     for (j,i) in self.input_replace.keys(): self.jit_cache[j].rawbufs[i] = None
