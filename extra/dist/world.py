@@ -104,7 +104,7 @@ class Send(Function):
     _send_lb(x, target_rank)
     return x
 
-class Recv(Function):
+class Recv(Function):  
   def forward(self, x:LazyBuffer, target_rank:int) -> LazyBuffer:
     self.target_rank = target_rank
     return _recv_lb(x, target_rank)
