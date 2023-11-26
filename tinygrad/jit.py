@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, List, Tuple, Dict, cast, Union, Optional, TypeVar, Generic
+from typing import Callable, List, Tuple, Dict, cast, Union, Optional, TypeVar, Generic, Any
 import functools, itertools, operator
 from tinygrad.helpers import DEBUG, DType, merge_dicts, getenv, all_int
 from tinygrad.ops import RawBuffer, Device, JITRunner, CompiledASTRunner
@@ -24,6 +24,13 @@ def get_input_replace(jit_cache: List[JitItem], input_rawbuffers:List[RawBuffer]
         input_replace[(j,i)] = input_rawbuffers.index(a)
   assert len(set(input_replace.values())) == len(input_rawbuffers), "some input tensors not found"
   return input_replace
+def get_output_replace(jit_cache: List[JitItem], fxn_ret:Union[Tuple[Any], List[Any]]) -> Dict[int, int]:
+  output_replace: Dict[int, int] = {}
+  raw_retbufs = [t.lazydata.realized for t in fxn_ret if isinstance(t, Tensor)]
+  for j,ji in enumerate(jit_cache):
+    if (a:=ji.rawbufs[0]) in raw_retbufs: output_replace[j] = raw_retbufs.index(a) # output buffers are always 0
+  assert (__a:=len(set(output_replace.values()))) == (__b:=len(raw_retbufs)), f"some output tensors not found {__a}, {__b}"
+  return output_replace
 def get_jc_idxs_with_updatable_launch_dims(jit_cache: List[JitItem]) -> List[int]:
   return [j for j,ji in enumerate(jit_cache) if isinstance(ji.prg, CompiledASTRunner) and ((ji.prg.global_size and not all_int(tuple(ji.prg.global_size))) or (ji.prg.local_size and not all_int(tuple(ji.prg.local_size))))]
 def get_jc_idxs_with_updatable_var_vals(jit_cache: List[JitItem]) -> List[int]:
@@ -40,6 +47,7 @@ class TinyJit(Generic[ReturnType]):
   def reset(self):
     self.jit_cache: List[JitItem] = []
     self.input_replace: Dict[Tuple[int, int], int] = {}
+    self.output_replace: Dict[int, int] = {}
     self.cnt: int = 0
     self.ret: Optional[ReturnType] = None
     self.expected_vals: Optional[Tuple[Variable, ...]] = None
@@ -66,6 +74,8 @@ class TinyJit(Generic[ReturnType]):
       assert self.expected_vals == expected_vals, "mismatch of var_vals"
       assert self.expected_name_sts_dtype == expected_name_sts_dtype, f"mismatch of sts, expected {self.expected_name_sts_dtype} got {expected_name_sts_dtype}"
       for (j,i),input_idx in self.input_replace.items(): self.jit_cache[j].rawbufs[i] = input_rawbuffers[input_idx]
+      ret = self.ret if isinstance(self.ret, (tuple, list)) else (self.ret, )
+      for j, output_idx in self.output_replace.items(): self.jit_cache[j].rawbufs[0] = ret[output_idx].lazydata.base.realized = self.jit_cache[j].rawbufs[0].fromCPU(self.jit_cache[j].rawbufs[0].toCPU().copy()) # type:ignore
       for ji in self.jit_cache: ji.prg(cast(List[RawBuffer], ji.rawbufs), var_vals, wait=DEBUG>=2, jit=True)
     elif self.cnt == 1:
       # jit capture
@@ -84,9 +94,11 @@ class TinyJit(Generic[ReturnType]):
           if DEBUG >= 1: print(f"graph create failed {e}")
 
       self.input_replace = get_input_replace(self.jit_cache, input_rawbuffers)
+      self.output_replace = get_output_replace(self.jit_cache, self.ret if isinstance(self.ret, (tuple, list)) else (self.ret, ))
     elif self.cnt == 0:
       # jit ignore
       self.ret = self.fxn(*args, **kwargs)
+      assert isinstance(self.ret, (tuple, list, Tensor)) or self.ret is None, f"Jitted function return value must be None, tuple, list, or Tensor. Got {type(self.ret)}"
 
     # clear jit inputs
     for (j,i) in self.input_replace.keys(): self.jit_cache[j].rawbufs[i] = None
