@@ -10,6 +10,7 @@ class RawBuffer:  # pylint: disable=abstract-method
     self.size: int = size
     self.dtype: DType = dtype
     self.offset: int = 0    # TODO: this is very unsupported, only in disk
+    self.fn: str = str(None) # TODO: only in disk
     self._buf = buf if buf is not None else (allocator(size, dtype, **kwargs) if allocator else None) # If buf is provided, use it. Otherwise try to allocate from the allocator.
     self._memsz: int = size*dtype.itemsize
     self._allocator = allocator
@@ -32,6 +33,9 @@ class RawBufferMapped(RawBuffer):
   # NOTE: this metadata prevents the backing buffer from being freed. hack can be removed with PEP688
   def toCPU(self) -> np.ndarray: return np.frombuffer(self._buffer(), dtype=np.dtype(self.dtype.np, metadata={"backing": self}), count=self.size)
   def _copyin(self, x:np.ndarray) -> None: np.copyto(self.toCPU(), x.reshape(-1))
+
+class RawBufferMappedDisk(RawBufferMapped):
+  def loadFromDisk(self, src:RawBufferMapped): raise NotImplementedError("must be implemented")
 
 # this one is simple enough that i moved it out of the runtimes
 ctypes_map = {dtypes.float64:ctypes.c_double, dtypes.float32: ctypes.c_float, dtypes.float16: ctypes.c_int16, dtypes.bfloat16: ctypes.c_int16, dtypes.int8: ctypes.c_int8, dtypes.uint8: ctypes.c_uint8, dtypes.bool: ctypes.c_uint8, dtypes.int32: ctypes.c_int32, dtypes.uint32: ctypes.c_uint32, dtypes.int64: ctypes.c_int64, dtypes.uint64: ctypes.c_uint64, dtypes.int16: ctypes.c_int16, dtypes.uint16: ctypes.c_uint16}

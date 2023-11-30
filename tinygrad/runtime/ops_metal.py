@@ -5,9 +5,11 @@ from tinygrad.codegen.kernel import LinearizerOptions
 from tinygrad.helpers import prod, getenv, DEBUG, DType, dtypes, diskcache, dedup
 from tinygrad.device import Compiled, CompiledASTRunner, update_stats
 from tinygrad.renderer.metal import MetalRenderer
-from tinygrad.runtime.lib import RawBufferMapped, RawBuffer, LRUAllocator
+from tinygrad.runtime.lib import RawBufferMapped, RawBufferMappedDisk, RawBuffer, LRUAllocator
 from tinygrad.shape.symbolic import Variable
 from tinygrad.jit import JitItem, get_input_replace, get_jit_stats, get_jc_idxs_with_updatable_launch_dims, GraphException
+from Foundation import NSURL
+import numpy as np
 
 class MetalAllocator(LRUAllocator):
   def _do_alloc(self, size, dtype, device, **kwargs):
@@ -24,6 +26,13 @@ class _METAL:
     self.mtl_buffers_in_flight: List[Any] = []
     self.device = Metal.MTLCreateSystemDefaultDevice()
     self.mtl_queue = self.device.newCommandQueueWithMaxCommandBufferCount_(1024)
+    desc = Metal.MTLIOCommandQueueDescriptor.alloc().init()
+    desc.setType_(Metal.MTLIOCommandQueueTypeConcurrent)
+    desc.setPriority_(Metal.MTLIOPriorityHigh)
+    desc.setMaxCommandBufferCount_(2**32-1)
+    desc.setMaxCommandsInFlight_(2**32-1)
+    self.mtl_io_queue, err = self.device.newIOCommandQueueWithDescriptor_error_(desc, None)
+    assert err is None, err
     self.allocator = MetalAllocator(self.device.dedicatedMemorySize() or self.device.sharedMemorySize())
   # TODO: is there a better way to do this?
   def synchronize(self):
@@ -31,14 +40,26 @@ class _METAL:
     self.mtl_buffers_in_flight.clear()
 METAL = _METAL()
 
-class RawMetalBuffer(RawBufferMapped):
+class RawMetalBuffer(RawBufferMappedDisk):
   def __init__(self, size:int, dtype:DType):
+    self.cmd_buf: Any = None
     assert dtype != dtypes.double, f"METAL does not support {dtype.name}"
     super().__init__(size, dtype, allocator=METAL.allocator)
   def _buffer(self):
     METAL.synchronize()
     return self._buf.contents().as_buffer(self._buf.length())
-
+  def toCPU(self) -> np.ndarray:
+    if self.cmd_buf is not None:
+      self.cmd_buf.waitUntilCompleted()
+      self.cmd_buf = None
+    return np.frombuffer(self._buffer(), dtype=np.dtype(self.dtype.np, metadata={"backing": self}), count=self.size)
+  def loadFromDisk(self, src:RawBufferMapped):
+    assert src.fn is not None
+    hdl, err = METAL.device.newIOHandleWithURL_error_(NSURL.fileURLWithPath_(src.fn), None)
+    assert err is None, f"Error creating io handle - {err}"
+    self.cmd_buf = METAL.mtl_io_queue.commandBuffer()
+    self.cmd_buf.loadBuffer_offset_size_sourceHandle_sourceHandleOffset_(self._buf, 0, self._memsz, hdl, src.offset)
+    self.cmd_buf.commit()
 def unwrap(x):
   ret, err = x
   assert err is None, str(err)
@@ -72,7 +93,11 @@ class MetalProgram:
     encoder = command_buffer.computeCommandEncoder()
     encoder.setComputePipelineState_(self.pipeline_state)
     for i,a in enumerate(bufs):
-      if isinstance(a, RawMetalBuffer): encoder.setBuffer_offset_atIndex_(a._buf, 0, i)
+      if isinstance(a, RawMetalBuffer):
+        if a.cmd_buf:
+          a.cmd_buf.waitUntilCompleted() 
+          a.cmd_buf = None
+        encoder.setBuffer_offset_atIndex_(a._buf, 0, i)
       elif isinstance(a, int): encoder.setBytes_length_atIndex_((arg:=ctypes.c_int32(a)), ctypes.sizeof(arg), i)
       else: raise RuntimeError(f"arg at index {i} has unsupported type {type(a)}")
     encoder.dispatchThreadgroups_threadsPerThreadgroup_(Metal.MTLSize(*global_size), Metal.MTLSize(*local_size))
@@ -111,6 +136,9 @@ class MetalGraph:
       icb_command.setComputePipelineState_(pipeline_state)
       for i,b in enumerate(ji.rawbufs):
         if b is not None:
+          if isinstance(b, RawMetalBuffer) and b.cmd_buf is not None:
+            b.cmd_buf.waitUntilCompleted()
+            b.cmd_buf = None
           icb_command.setKernelBuffer_offset_atIndex_(b._buf, 0, i)
           if i == 0: write_resources.append(b._buf)
           else: read_resources.append(b._buf)
@@ -129,6 +157,10 @@ class MetalGraph:
     # NOTE: you at least can't update the ints if this is running
     if self.command_buffer is not None and self.command_buffer in METAL.mtl_buffers_in_flight: self.command_buffer.waitUntilCompleted()
     all_read_resources = self.read_resources + [x._buf for x in input_rawbuffers]
+    for b in input_rawbuffers:
+      if isinstance(b, RawMetalBuffer) and b.cmd_buf is not None:
+        b.cmd_buf.waitUntilCompleted() 
+        b.cmd_buf = None
     for (j,i),input_idx in self.input_replace.items():
       self.icb.indirectComputeCommandAtIndex_(j).setKernelBuffer_offset_atIndex_(input_rawbuffers[input_idx]._buf, 0, i)
     for j in self.jc_idx_with_updatable_launch_dims:

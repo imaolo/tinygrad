@@ -18,10 +18,12 @@ class UnderlyingDiskBuffer:
 class RawDiskBuffer(RawBufferMapped):
   def __init__(self, size, dtype:DType, buf=None, device:Optional[str]=None, offset:int=0):  # pylint: disable=super-init-not-called
     assert device is not None or buf is not None, "disk tensor needs a path or a buf"
+    self.fn: str = str(None)
     if device is not None:
       if str(device).startswith("shm:"):
         if OSX:
           with open(f"/tmp/shm_{device[4:]}", "w+b") as f:
+            self.fn = f.name
             f.truncate(size * dtype.itemsize)
             shm = mmap.mmap(f.fileno(), size * dtype.itemsize, flags=mmap.MAP_SHARED)
         else:
@@ -32,11 +34,20 @@ class RawDiskBuffer(RawBufferMapped):
           os.close(fd)
         buf = UnderlyingDiskBuffer(None, shm)
       else:
-        f = open(device, "a+b")
-        if os.path.getsize(device) < size * dtype.itemsize: os.ftruncate(f.fileno(), size * dtype.itemsize)
-        buf = UnderlyingDiskBuffer(f, mmap.mmap(f.fileno(), size * dtype.itemsize))
+        self.fn = device
+        buf = None 
     # NOTE: we don't call super since disk tensors don't use RAM
-    self.size, self.dtype, self._buf, self.offset = size, dtype, buf, offset
+    self.__buf: Optional[UnderlyingDiskBuffer] = buf
+    self.size, self.dtype, self.offset = size, dtype, offset
+  @property
+  def _buf(self) -> UnderlyingDiskBuffer:
+    if self.__buf is None:
+      f = open(self.fn, "a+b")
+      if os.path.getsize(self.fn) < self.size * self.dtype.itemsize: os.ftruncate(f.fileno(), self.size * self.dtype.itemsize)
+      self.__buf = UnderlyingDiskBuffer(f, mmap.mmap(f.fileno(), self.size * self.dtype.itemsize))
+    return self.__buf
+  @_buf.setter
+  def _buf(self, val: UnderlyingDiskBuffer): self.__buf = val
   def cast(self, arg:Tuple[DType, bool]):
     return RawDiskBuffer(self.size, arg[0], self._buf, offset=self.offset)
   def as_strided(self, arg):
