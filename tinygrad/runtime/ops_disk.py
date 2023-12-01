@@ -18,6 +18,7 @@ class UnderlyingDiskBuffer:
 class RawDiskBuffer(RawBufferMapped):
   def __init__(self, size, dtype:DType, buf=None, device:Optional[str]=None, offset:int=0):  # pylint: disable=super-init-not-called
     assert device is not None or buf is not None, "disk tensor needs a path or a buf"
+    self._cpu_back = None
     if device is not None:
       if str(device).startswith("shm:"):
         if OSX:

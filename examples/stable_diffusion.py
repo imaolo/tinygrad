@@ -616,7 +616,7 @@ if __name__ == "__main__":
   if args.seed is not None: Tensor._seed = args.seed
   latent = Tensor.randn(1,4,64,64)
 
-  @TinyJit
+  # @TinyJit
   def run(model, *x): return model(*x).realize()
 
   # this is diffusion

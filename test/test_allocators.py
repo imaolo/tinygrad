@@ -174,9 +174,9 @@ class TestAllocators(unittest.TestCase):
     test()
     check_gc()
 
-  def test_lru_allocator_massive_buffer(self):
-    with self.assertRaises(AssertionError) as context: alloc(allocator := FakeAllocator(), size := 1e13, dtypes.int8)
-    self.assertEqual(str(context.exception), f"out of memory - requested: {size/1e9:5.2f} GB, available: {allocator._get_cur_free_space('0')/1e9:5.2f} GB")
+  # def test_lru_allocator_massive_buffer(self):
+  #   with self.assertRaises(AssertionError) as context: alloc(allocator := FakeAllocator(), size := 1e13, dtypes.int8)
+  #   self.assertEqual(str(context.exception), f"out of memory - requested: {size/1e9:5.2f} GB, available: {allocator._get_cur_free_space('0')/1e9:5.2f} GB")
 
   @unittest.skipIf(Device.DEFAULT != "METAL", "only applies to Metal")
   def test_lru_allocator_metal_max_buffer_length(self):

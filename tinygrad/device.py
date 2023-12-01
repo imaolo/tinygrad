@@ -159,6 +159,7 @@ class CompiledASTRunner(JITRunner):
     lra = self.runtime_args.copy()
     if global_size: lra['global_size'] = global_size
     if local_size and 'local_size' not in lra: lra['local_size'] = local_size
+    for b in rawbufs: b._buf # trigger swap
     et = self.clprg(*rawbufs, *[var_vals[k] for k in self.vars], **lra, wait=wait or DEBUG>=2)
     update_stats(self.display_name, self.op_estimate, self.mem_estimate, var_vals, et, len(rawbufs), jit, lra=lra)
     return et

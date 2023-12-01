@@ -4,20 +4,68 @@ import numpy as np
 from collections import defaultdict, deque
 from typing import Any, Dict, Deque, Tuple
 from tinygrad.helpers import DType, dtypes, prod, GlobalCounters, ImageDType
-
+from weakref import ref, WeakSet, ReferenceType
 class RawBuffer:  # pylint: disable=abstract-method
+  live_buffers: Dict[Any, WeakSet[RawBuffer]] = defaultdict(WeakSet)
+  live_buffers_ordered: Dict[Any, Deque[ReferenceType[RawBuffer]]]  = defaultdict(deque)
   def __init__(self, size:int, dtype:DType, buf:Any=None, allocator:Any=None, **kwargs):
     self.size: int = size
     self.dtype: DType = dtype
     self.offset: int = 0    # TODO: this is very unsupported, only in disk
-    self._buf = buf if buf is not None else (allocator(size, dtype, **kwargs) if allocator else None) # If buf is provided, use it. Otherwise try to allocate from the allocator.
-    self._memsz: int = size*dtype.itemsize
-    self._allocator = allocator
     self._device = kwargs.get('device', None)
+    self._memsz: int = size*dtype.itemsize
+    self._cpu_back: np.ndarray = None
+    self.kwargs = kwargs
+    alloc_device = self._device if self._device is not None else '0'
+    try: self.__buf = buf if buf is not None else (allocator(size, dtype, **kwargs) if allocator else None) # If buf is provided, use it. Otherwise try to allocate from the allocator.
+    except: # allocation failed, swap time
+      while allocator._get_cur_free_space(alloc_device) < self._memsz and len(self.live_buffers_ordered[alloc_device]):
+        swap_buf_ref = self.live_buffers_ordered[alloc_device].popleft()
+        if swap_buf_ref() is not None and swap_buf_ref() in self.live_buffers[alloc_device]:
+          print("swappin'")
+          swap_buf: RawBuffer = swap_buf_ref()
+          self.live_buffers[alloc_device].remove(swap_buf)
+          assert swap_buf._cpu_back is None
+          swap_buf._cpu_back = swap_buf.toCPU().copy()
+          allocator.free(swap_buf.__buf)
+        try: allocator.ensure_has_free_space(self._memsz, alloc_device)
+        except: pass
+      self.__buf = allocator(size, dtype, **kwargs)
+    self._allocator = allocator
+    self.live_buffers[alloc_device].add(self)
+    self.live_buffers_ordered[alloc_device].append(ref(self))
     GlobalCounters.mem_used += self._memsz
+  @property
+  def _buf(self) -> Any:
+    if self._cpu_back is None: return self.__buf
+    alloc_device = self._device if self._device is not None else '0'
+    print("swap back")
+    try: self.__buf = self._allocator(self.size, self.dtype, **self.kwargs)
+    except: # MORE SWAP!
+      while self._allocator._get_cur_free_space(alloc_device) < self._memsz and len(self.live_buffers_ordered[alloc_device]):
+        swap_buf_ref = self.live_buffers_ordered[alloc_device].popleft()
+        if swap_buf_ref() is not None and swap_buf_ref() in self.live_buffers[alloc_device]:
+          print("swappin', but nested")
+          swap_buf: RawBuffer = swap_buf_ref()
+          self.live_buffers[alloc_device].remove(swap_buf)
+          assert swap_buf._cpu_back is None
+          swap_buf._cpu_back = swap_buf.toCPU().copy()
+          self._allocator.free(swap_buf.__buf)
+        try: self._allocator.ensure_has_free_space(self._memsz, alloc_device)
+        except: pass
+      self.__buf = self._allocator(self.size, self.dtype, **self.kwargs)
+    recursion_police = self._cpu_back
+    self._cpu_back = None
+    self._copyin(recursion_police)
+    self.live_buffers[alloc_device].add(self)
+    self.live_buffers_ordered[alloc_device].append(ref(self))
+    return self.__buf
+  @_buf.setter
+  def _buf(self, val): self.__buf = val
   def __del__(self):  # NOTE: if it fails on init (bad dtype), it won't have a _memsz
     if hasattr(self, '_memsz'): GlobalCounters.mem_used -= self._memsz
-    if hasattr(self, '_allocator') and self._allocator: self._allocator.free(self._buf)
+    if hasattr(self, '_allocator') and self._allocator and self._cpu_back is None: self._allocator.free(self.__buf)
+    self._cpu_back = None
   def __repr__(self): return f"buffer<{self.size}, {self.dtype}, {id(self)}>"
   @classmethod
   def fromCPU(cls, x:np.ndarray, **kwargs):
