@@ -49,6 +49,9 @@ class Buffer:
   def __repr__(self): return f"<buf device:{self.device} size:{self.size}>"
   def copy_(self, src:Buffer):
     assert self.size == src.size and self.dtype == src.dtype, "buffer copy size/dtype mismatch"
+    if hasattr(self.allocator, 'from_disk') and (dev := src.device.split(':'))[0] == 'DISK' and len(dev) == 2 and not dev[1].startswith('shm'):
+      self.allocator.from_disk(self, src)
+      return
     if hasattr(self.allocator, 'transfer') and type(self.allocator) is type(src.allocator):
       # fast path, used on HIP between GPUs
       self.allocator.transfer(self._buf, src._buf, self.size*self.dtype.itemsize)
