@@ -2,7 +2,7 @@ import unittest
 import pathlib
 from examples.whisper import init_whisper, load_file_waveform, transcribe_file, transcribe_waveform
 from tinygrad.helpers import CI, fetch
-from tinygrad.ops import Device
+from tinygrad import Device
 
 # Audio generated with the command on MacOS:
 # say "Could you please let me out of the box?" --file-format=WAVE  --data-format=LEUI8@16000 -o test
@@ -62,4 +62,5 @@ class TestWhisper(unittest.TestCase):
     with self.assertRaises(Exception):
       transcribe_waveform(self.model, self.enc, waveforms)
 
-
+if __name__ == '__main__':
+  unittest.main()

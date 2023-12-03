@@ -1,6 +1,6 @@
 # ShapeTracker allows movement operations to a buffer that don't require a copy to be made.
 from __future__ import annotations
-import functools
+import functools, itertools, operator
 from dataclasses import dataclass
 from typing import Tuple, List, Optional, Dict, Set, cast, Union, Iterable
 from tinygrad.ops import MovementOps
@@ -12,13 +12,10 @@ from tinygrad.shape.view import View
 def to_shape_strides(shape:Tuple[int, ...], strides:Tuple[int, ...]) -> Tuple[Tuple[int, int], ...]:
   assert len(shape) == len(strides)
   ret = [(shape[0], strides[0])] if shape else []
-  for i in range(1, len(shape)):
-    if ret[-1][1] == shape[i]*strides[i] or ret[-1][0] == 1:
-      ret[-1] = (ret[-1][0] * shape[i], strides[i])
-    elif shape[i] == 1:
-      continue
-    else:
-      ret.append((shape[i], strides[i]))
+  for s,st in zip(shape[1:], strides[1:]):
+    ps,pst = ret[-1]
+    if pst == s*st or ps == 1: ret[-1] = (ps*s, st)
+    elif s != 1: ret.append((s, st))
   return tuple(ret)
 
 def expr_node_mask(view:View, idx:Node, valid:Optional[Node]=None) -> Node:
@@ -77,7 +74,12 @@ class ShapeTracker:
   @property
   def shape(self) -> Tuple[sint, ...]: return self.views[-1].shape
 
-  def size(self): return 0 if (0 in self.shape) else self.expr_idxs()[0].max+1
+  def size(self) -> int:
+    if 0 in self.shape: return 0
+    ret = self.expr_idxs()[0].max
+    while not isinstance(ret, int): ret = ret.max    # TODO: this is a while loop?!? it should be more clear what max does
+    assert isinstance(ret, int), f"ret must be integer, {ret=} isn't"
+    return ret+1
 
   def vars(self) -> Set[Variable]: return set.union(*[v.vars() for v in self.views], set())
 
@@ -90,7 +92,7 @@ class ShapeTracker:
     to_apply:List[Tuple[MovementOps, Tuple]] = []
     for v in self.views:
       real_shape = tuple(y-x for x,y in v.mask) if v.mask else v.shape
-      real_offset = v.offset + (sum(x*st for (x,_),st in zip(v.mask, v.strides)) if v.mask else 0)
+      real_offset = 0 if 0 in real_shape else (v.offset + (sum(x*st for (x,_),st in zip(v.mask, v.strides)) if v.mask else 0))
       # first, we apply the offset
       # then, we make it the correct shape
       # then, we apply permutations
@@ -175,21 +177,7 @@ class ShapeTracker:
 # returns the axes to create new_shape if new_shape can be created by combining axis from old_shape
 # TODO: if we remove movementops from lazy.py we can delete this
 def get_contraction(old_shape:Tuple[sint, ...], new_shape:Tuple[sint, ...]) -> Optional[List[List[int]]]:
-  # Pre-allocate all groups.
-  axis_groups: List[List[int]] = [[] for _ in range(len(new_shape))]
-  # Index for new_shape and axis_groups.
-  i: int = 0
-  old_shape_i: int = 0
-  while old_shape_i < len(old_shape):
-    # 1s exist in new_shape only will lead to empty axes group creations.
-    if new_shape[i] == 1 and old_shape[old_shape_i] != 1:
-      if i < len(new_shape) - 1: i += 1
-    else:
-      axis_groups[i].append(old_shape_i)
-      axis_group_size = prod([old_shape[x] for x in axis_groups[i]])
-      # Move to next axes group if total size of all dimensions match.
-      if axis_group_size == new_shape[i]:
-        if i < len(new_shape) - 1: i += 1
-      elif axis_group_size > new_shape[i]: return None
-      old_shape_i += 1
-  return axis_groups
+  acc_old, acc_new = list(itertools.accumulate(old_shape, operator.mul)), list(itertools.accumulate(new_shape, operator.mul))
+  try: split = [acc_old.index(acc)+1 if acc != 1 else 0 for acc in acc_new]
+  except ValueError: return None
+  return [list(range(st,ed)) for st,ed in zip([0]+split[:-1], split[:-1]+[len(old_shape)])]
