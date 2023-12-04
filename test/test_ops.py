@@ -327,6 +327,18 @@ class TestOps(unittest.TestCase):
   def test_rsqrt(self):
     helper_test_op([(45,65)], lambda x: torch.rsqrt(x), Tensor.rsqrt, a=0)
     helper_test_op([()], lambda x: torch.rsqrt(x), Tensor.rsqrt, a=0)
+  def test_xor(self):
+    from tinygrad.lazy import LazyBuffer
+    from tinygrad.realize import run_schedule
+    from tinygrad.ops import BinaryOps
+
+    a = LazyBuffer.fromCPU(np.array([49], np.int32)).copy_to_device(Device.DEFAULT)
+    b = LazyBuffer.fromCPU(np.array([79], np.int32)).copy_to_device(Device.DEFAULT)
+    out = a.e(BinaryOps.XOR, b)
+    sched = out.schedule()
+    run_schedule(sched)
+
+    assert out.realized.toCPU()[0] == (a.realized.toCPU()[0]^b.realized.toCPU()[0])
 
   def test_sin(self):
     helper_test_op([(45,65)], lambda x: x.sin(), Tensor.sin, a=0)
