@@ -728,6 +728,12 @@ class Tensor:
     x,z = x_._broadcasted(other)
     return mlops.Where.apply(x, *y._broadcasted(z))
 
+  def bitwise_xor(self, x:Union[Tensor, int], reverse=False) -> Tensor: # no cast (yet?)
+    assert self.dtype == dtypes.int32
+    if isinstance(x, Tensor): assert x.dtype==dtypes.int32 
+    else: assert isinstance(x, int)
+    return  mlops.Xor.apply(*self._broadcasted(x, reverse)) if x.__class__ is Tensor or x else self
+
   # ***** op wrappers (wasted lines to make the typechecker happy) *****
 
   def __neg__(self) -> Tensor: return self.neg()
@@ -738,6 +744,8 @@ class Tensor:
   def __pow__(self, x) -> Tensor: return self.pow(x)
   def __truediv__(self, x) -> Tensor: return self.div(x)
   def __matmul__(self, x) -> Tensor: return self.matmul(x)
+
+  def __xor__(self, x) -> Tensor: return self.bitwise_xor(x)
 
   def __radd__(self, x) -> Tensor: return self.add(x, True)
   def __rsub__(self, x) -> Tensor: return self.sub(x, True)
