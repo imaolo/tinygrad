@@ -730,7 +730,7 @@ class Tensor:
 
   def bitwise_xor(self, x:Union[Tensor, int], reverse=False) -> Tensor: # no cast (yet?)
     assert self.dtype == dtypes.int32
-    if isinstance(x, Tensor): assert x.dtype==dtypes.int32 
+    if isinstance(x, Tensor): assert x.dtype==dtypes.int32
     else: assert isinstance(x, int)
     return  mlops.Xor.apply(*self._broadcasted(x, reverse)) if x.__class__ is Tensor or x else self
 
