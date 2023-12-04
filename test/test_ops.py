@@ -13,9 +13,9 @@ if CI:
 
 FORWARD_ONLY = getenv("FORWARD_ONLY", 0)
 PRINT_TENSORS = getenv("PRINT_TENSORS", 0)
-def helper_test_op(shps, torch_fxn, tinygrad_fxn=None, atol=1e-6, rtol=1e-3, grad_atol=1e-4, grad_rtol=1e-3, forward_only=False, vals=None, a=-0.5, b=3):
+def helper_test_op(shps, torch_fxn, tinygrad_fxn=None, atol=1e-6, rtol=1e-3, grad_atol=1e-4, grad_rtol=1e-3, forward_only=False, vals=None, a=-0.5, b=3, dtype=torch.float32):
   if tinygrad_fxn is None: tinygrad_fxn = torch_fxn
-  ts, tst = prepare_test_op(a, b, shps, vals, forward_only)
+  ts, tst = prepare_test_op(a, b, shps, vals, forward_only, dtype=dtype)
 
   st = time.monotonic()
   out = torch_fxn(*ts)
@@ -55,11 +55,11 @@ def helper_test_op(shps, torch_fxn, tinygrad_fxn=None, atol=1e-6, rtol=1e-3, gra
 
   if not CI: print("\ntesting %40r   torch/tinygrad fp: %.2f / %.2f ms  bp: %.2f / %.2f ms " % (shps, torch_fp*1000, tinygrad_fp*1000, torch_fbp*1000, tinygrad_fbp*1000), end="")
 
-def prepare_test_op(a, b, shps, vals, forward_only=False):
+def prepare_test_op(a, b, shps, vals, forward_only=False, dtype=torch.float32):
   torch.manual_seed(0)
   np.random.seed(0)
   if shps is None: ts = [torch.tensor(x, requires_grad=(not forward_only)) for x in vals]
-  else: ts = [torch.tensor((np.random.random(size=x) + a) * b, requires_grad=(not forward_only), dtype=torch.float32) for x in shps]
+  else: ts = [torch.tensor((np.random.random(size=x) + a) * b, requires_grad=(not forward_only), dtype=dtype) for x in shps]
   tst = [Tensor(x.detach().numpy(), requires_grad=(not forward_only and not FORWARD_ONLY)) for x in ts]
   return ts, tst
 
@@ -327,7 +327,8 @@ class TestOps(unittest.TestCase):
   def test_rsqrt(self):
     helper_test_op([(45,65)], lambda x: torch.rsqrt(x), Tensor.rsqrt, a=0)
     helper_test_op([()], lambda x: torch.rsqrt(x), Tensor.rsqrt, a=0)
-
+  def test_xor(self):
+    helper_test_op([(45,65), (45,65)], lambda x,y: x^y, a=64, b=235, forward_only=True, dtype=torch.int32)
   def test_sin(self):
     helper_test_op([(45,65)], lambda x: x.sin(), Tensor.sin, a=0)
   def test_cos(self):
