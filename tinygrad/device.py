@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from collections import defaultdict
-from typing import TYPE_CHECKING, Union, Any, List, Optional, Dict, Callable
+from typing import TYPE_CHECKING, Union, Any, List, Optional, Dict, Callable, Tuple
 import importlib, inspect, functools, pathlib, time, re, ctypes
 from tinygrad.helpers import ansilen, DEBUG, getenv, GlobalCounters, colored, BEAM, NOOPT, all_int, to_function_name, DType, from_mv, dtypes, flat_mv, ImageDType
 from tinygrad.shape.symbolic import Variable, sym_infer, sint
@@ -81,12 +81,12 @@ class Buffer:
     self.allocator.copyin(self._buf, mv)
     return self
   @staticmethod
-  def fromCPU(device:str, x:np.ndarray): return Buffer(device, x.size, dtypes.from_np(x.dtype)).copyin(x.data)
-  def toCPU(self) -> np.ndarray:
+  def fromCPU(device:str, x:memoryview, dtype: DType): return Buffer(device, x.nbytes/dtype.itemsize, dtype).copyin(x)
+  def toCPU(self) -> memoryview:
     # zero copy with as_buffer
-    if hasattr(self.allocator, 'as_buffer'): return np.frombuffer(self.allocator.as_buffer(self._buf), dtype=np.dtype(self.dtype.np, metadata={"backing": self._buf}))  # type: ignore
-    ret = np.empty(self.size, self.dtype.np)
-    if self.size > 0: self.allocator.copyout(flat_mv(ret.data), self._buf)
+    if hasattr(self.allocator, 'as_buffer'): return self.allocator.as_buffer(self._buf)
+    ret = MallocAllocator.alloc(self.size * self.dtype.itemsize)
+    if self.size > 0: self.allocator.copyout(flat_mv(ret), self._buf)
     return ret
 
 class _BufferCopy(JITRunner):
@@ -95,26 +95,26 @@ class _BufferCopy(JITRunner):
     dest, src = rawbufs
     assert dest.size == src.size and dest.dtype == src.dtype, "buffer copy size/dtype mismatch"
     if DEBUG >= 2: print(f"***      copy {dest.device} <- {src.device} size {dest.size:<16d} dtype {dest.dtype}")
-    if hasattr(dest.allocator, 'transfer') and type(dest.allocator) is type(src.allocator):
-      # fast path, used on HIP between GPUs
-      # NOTE: it's important we use the dest device here to ensure the transfer is ready
-      dest.allocator.transfer(dest._buf, src._buf, dest.size*dest.dtype.itemsize)
-      return
-    if getenv("FROM_BUFFER") and hasattr(dest.allocator, 'from_buffer') and hasattr(dest.allocator, 'transfer') and hasattr(src.allocator, 'as_buffer'):
-      # fast path, used on Metal in OS X Sonoma
-      # NOTE: this is *only* faster if the pages from disk are already loaded into memory
-      fb = dest.allocator.from_buffer(src.allocator.as_buffer(src._buf))
-      if fb:
-        dest.allocator.transfer(dest._buf, fb, dest.size*dest.dtype.itemsize)
-        return
-    if hasattr(dest.allocator, 'as_buffer'):
-      # fast(ish) path, uses readinto in diskbuffers
-      src.allocator.copyout(dest.allocator.as_buffer(dest._buf), src._buf)
-    elif hasattr(src.allocator, 'as_buffer'):
-      dest.allocator.copyin(dest._buf, src.allocator.as_buffer(src._buf))
-    else:
+    # if hasattr(dest.allocator, 'transfer') and type(dest.allocator) is type(src.allocator):
+    #   # fast path, used on HIP between GPUs
+    #   # NOTE: it's important we use the dest device here to ensure the transfer is ready
+    #   dest.allocator.transfer(dest._buf, src._buf, dest.size*dest.dtype.itemsize)
+    #   return
+    # if getenv("FROM_BUFFER") and hasattr(dest.allocator, 'from_buffer') and hasattr(dest.allocator, 'transfer') and hasattr(src.allocator, 'as_buffer'):
+    #   # fast path, used on Metal in OS X Sonoma
+    #   # NOTE: this is *only* faster if the pages from disk are already loaded into memory
+    #   fb = dest.allocator.from_buffer(src.allocator.as_buffer(src._buf))
+    #   if fb:
+    #     dest.allocator.transfer(dest._buf, fb, dest.size*dest.dtype.itemsize)
+    #     return
+    # if hasattr(dest.allocator, 'as_buffer'):
+    #   # fast(ish) path, uses readinto in diskbuffers
+    #   src.allocator.copyout(dest.allocator.as_buffer(dest._buf), src._buf)
+    # elif hasattr(src.allocator, 'as_buffer'):
+    #   dest.allocator.copyin(dest._buf, src.allocator.as_buffer(src._buf))
+    # else:
       # slow path, allocates a CPU buffer
-      dest.copyin(src.toCPU().data)
+    dest.copyin(src.toCPU())
 BufferCopy = _BufferCopy()
 
 # TODO: size, dest, src are the same type. can we enforce this?
