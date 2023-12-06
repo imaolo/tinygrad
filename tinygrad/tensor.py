@@ -6,7 +6,7 @@ from collections import defaultdict
 from functools import partialmethod, reduce
 from itertools import accumulate
 
-from tinygrad.helpers import ImageDType, argfix, make_pair, getenv, IMAGE, DEBUG, flatten, DType, dtypes, prod, all_int, round_up, get_shape, to_mv
+from tinygrad.helpers import ImageDType, argfix, make_pair, getenv, IMAGE, DEBUG, flatten, DType, dtypes, prod, all_int, round_up, to_mv
 from tinygrad.lazy import LazyBuffer
 from tinygrad.ops import LoadOps
 from tinygrad.device import Device, Buffer
@@ -66,9 +66,9 @@ class Tensor:
     elif data is None or data.__class__ is list:
       # data = [] if data is None else data
       import numpy as np
-      # data1, shape = to_mv(data, shape := get_shape(data), (dtype or Tensor.default_type))
+      data1, shape = to_mv(data, dtype := (dtype or Tensor.default_type))
       data = LazyBuffer.fromCPU(arr := np.array([] if data is None else data, dtype=(dtype or Tensor.default_type).np))
-      # assert arr.shape == shape, f"{arr.shape}, {shape}" # during development
+      assert arr.shape == shape, f"{arr.shape}, {shape}" # during development
     elif isinstance(data, bytes):
       import numpy as np
       data = LazyBuffer.fromCPU(np.frombuffer(data, np.uint8))

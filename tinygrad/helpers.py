@@ -3,7 +3,6 @@ import os, functools, platform, time, re, contextlib, operator, hashlib, pickle,
 from urllib import request
 from tqdm import tqdm
 from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable, Type
-from collections.abc import Sequence
 from ctypes import _SimpleCData
 if TYPE_CHECKING:  # TODO: remove this and import TypeGuard from typing once minimum python supported version is 3.10
   from typing_extensions import TypeGuard
