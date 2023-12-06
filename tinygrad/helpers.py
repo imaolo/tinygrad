@@ -129,6 +129,9 @@ class DType(NamedTuple):
     assert sz > 1 and self.sz == 1, f"can't vectorize {self} with size {sz}"
     return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, None, sz)
   def scalar(self): return DTYPES_DICT[self.name[:-len(str(self.sz))]] if self.sz > 1 else self
+  def to_ctype(self, x: Union[int, float]):
+    if self.ctype is not None: return self.ctype(x)
+    raise RuntimeError(f"no ctype for {self}")
 
 # dependent typing?
 class ImageDType(DType):
@@ -302,7 +305,7 @@ def flat_mv(mv:memoryview):
 def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> Tuple[memoryview, Tuple[int, ...]]:
   shape = get_shape(l)
   for _ in range(len(shape) - 1): l = flatten(l)
-  l = list(map(dtype.ctype, l))
+  l = list(map(dtype.to_ctype, l))
   buffer = (dtype.ctype * len(l))()
   buffer[:] = l[:]
   return memoryview(buffer), shape
