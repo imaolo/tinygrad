@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 from PIL import Image
-from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod, round_up, fetch, get_shape, Scalar
+from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod, round_up, fetch, get_shape, Scalar, to_mv
 from tinygrad.shape.symbolic import Variable, NumNode
 
 VARIABLE = ContextVar("VARIABLE", 0)
@@ -185,7 +185,13 @@ class TetsGetShape(unittest.TestCase):
     test([[1,2,3], [4,5,6], [7,8,'nine']], (ValueError, f"Sequence must consist of scalar types - {Scalar} - {str}"))
     test([[[1],[2],[3]], [[1],[2,4],[3]], [[1],[2],[3]]], (ValueError, "Inconsistent dimensions"))
 
+class TetsToMv(unittest.TestCase):
 
+  def test_to_mv(self):
+
+    arr = [[[1],[2],[3]], [[1],[2],[3]], [[1],[2],[3]]]
+    mv, shape = to_mv(arr, dtypes.float)
+    assert np.array_equal(np.frombuffer(mv, dtype=dtypes.float32.np).reshape(shape), np.array(arr, dtype=dtypes.float32.np))
 
 
 

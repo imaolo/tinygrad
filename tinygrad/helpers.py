@@ -61,7 +61,7 @@ def get_shape(x: Union[List, Scalar], _shape=tuple()) -> Tuple[int, ...]:
     if len(x) > 0: x = x[0]
     else: return _shape
   if isinstance(x, Scalar): return _shape
-  # onnx embedds numpy elements in Lists. I can't think of a way to avoid the import here
+  # TODO: onnx embedds numpy elements in Lists. I can't think of a way to avoid the import
   import numpy as np
   if isinstance(x, np.generic): return _shape
   raise ValueError(f"Sequence must consist of scalar types - {Scalar} - {type(x)}")
@@ -300,8 +300,14 @@ def get_bytes(arg, get_sz, get_str, check) -> bytes: return (sz := init_c_var(ct
 def flat_mv(mv:memoryview):
   if len(mv) == 0: return mv
   return mv.cast("B", shape=(mv.nbytes,))
-def to_mv(l: Union[List, Scalar], shape: Tuple[int, ...], dtype: DType) -> memoryview:
-  return l
+def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> memoryview:
+  shape = get_shape(l)
+  for _ in range(len(shape) - 1): l = flatten(l)
+  l = list(map(dtype.ctype, l))
+  buffer = (dtype.ctype * len(l))()  
+  buffer[:] = l[:]
+  return memoryview(buffer), shape
+
 # *** Helpers for CUDA-like APIs.
 
 def pretty_ptx(s):
