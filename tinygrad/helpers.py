@@ -145,7 +145,7 @@ class ImageDType(DType):
   def __ne__(self, x): return super().__ne__(x) or self.shape != x.shape
 
 class PtrDType(DType):
-  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, None, dt.sz)
+  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, dt.ctype, dt.sz)
   def __repr__(self): return f"ptr.{super().__repr__()}"
 
 class dtypes:
@@ -163,22 +163,22 @@ class dtypes:
     return DTYPES_DICT[x.name] 
   @staticmethod
   def fields() -> Dict[str, DType]: return DTYPES_DICT
-  bool: Final[DType] = DType(0, 1, "bool", "bool")
+  bool: Final[DType] = DType(0, 1, "bool", "bool", ctypes.c_byte)
   float16: Final[DType] = DType(9, 2, "half", "float16")
   half = float16
-  float32: Final[DType] = DType(10, 4, "float", "float32")
+  float32: Final[DType] = DType(10, 4, "float", "float32", ctypes.c_float)
   float = float32
-  float64: Final[DType] = DType(11, 8, "double", "float64")
+  float64: Final[DType] = DType(11, 8, "double", "float64", ctypes.c_double)
   double = float64
-  int8: Final[DType] = DType(1, 1, "char", "int8")
-  int16: Final[DType] = DType(3, 2, "short", "int16")
-  int32: Final[DType] = DType(5, 4, "int", "int32")
+  int8: Final[DType] = DType(1, 1, "char", "int8", ctypes.c_byte)
+  int16: Final[DType] = DType(3, 2, "short", "int16", ctypes.c_short)
+  int32: Final[DType] = DType(5, 4, "int", "int32", ctypes.c_int)
   int = int32
-  int64: Final[DType] = DType(7, 8, "long", "int64")
-  uint8: Final[DType] = DType(2, 1, "unsigned char", "uint8")
-  uint16: Final[DType] = DType(4, 2, "unsigned short", "uint16")
-  uint32: Final[DType] = DType(6, 4, "unsigned int", "uint32")
-  uint64: Final[DType] = DType(8, 8, "unsigned long", "uint64")
+  int64: Final[DType] = DType(7, 8, "long", "int64", ctypes.c_long)
+  uint8: Final[DType] = DType(2, 1, "unsigned char", "uint8", ctypes.c_ubyte)
+  uint16: Final[DType] = DType(4, 2, "unsigned short", "uint16", ctypes.c_ushort)
+  uint32: Final[DType] = DType(6, 4, "unsigned int", "uint32", ctypes.c_uint)
+  uint64: Final[DType] = DType(8, 8, "unsigned long", "uint64", ctypes.c_ulong)
 
   # NOTE: bfloat16 isn't supported in numpy
   bfloat16: Final[DType] = DType(9, 2, "__bf16", None)
