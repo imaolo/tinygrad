@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 from PIL import Image
-from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod, round_up, fetch
+from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod, round_up, fetch, get_shape
 from tinygrad.shape.symbolic import Variable, NumNode
 
 VARIABLE = ContextVar("VARIABLE", 0)
@@ -159,6 +159,31 @@ class TestFetch(unittest.TestCase):
     img = fetch("https://media.istockphoto.com/photos/hen-picture-id831791190", allow_caching=False)
     with Image.open(img) as pimg:
       assert pimg.size == (705, 1024)
+
+class TetsGetShape(unittest.TestCase):
+
+  def test_get_shape(self): # TODO: should probably fuzz this
+    def test(l, err_info=None):
+      try: npres = np.array(l).shape
+      except: npres = None
+      if err_info:
+        with self.assertRaises(err_info[0]) as ctx: assert get_shape(l) == np.array(l).shape
+        self.assertEqual(str(ctx.exception), err_info[1])
+      else: assert get_shape(l) == np.array(l).shape
+    test([i for i in range(10)])
+    test([[[i for i in range(10)] for _ in range(10)] for _ in range(10)])
+    test([[1], [2]])
+    test([[1,2,3], [1,2,3], [1,2,3]])
+    test([[[1],[2],[3.0]], [[1],[2],[3]], [[1],[2],[3]]])
+    test(1.0)
+    test('one', (ValueError, "Sequence must consist of numeric types"))
+    test([1, 2,'three'], (ValueError, "Sequence must consist of numeric types"))
+    test([[1,2,3], [4,5,6], [7,8,'nine']], (ValueError, "Sequence must consist of numeric types"))
+    test([[[1],[2],[3]], [[1],[2,4],[3]], [[1],[2],[3]]], (ValueError, "Inconsistent dimensions"))
+
+
+
+
 
 if __name__ == '__main__':
   unittest.main()

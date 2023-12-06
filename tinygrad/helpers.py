@@ -3,12 +3,15 @@ import os, functools, platform, time, re, contextlib, operator, hashlib, pickle,
 import numpy as np
 from urllib import request
 from tqdm import tqdm
-from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable
+from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable, Sequence
+from collections.abc import Sequence
 if TYPE_CHECKING:  # TODO: remove this and import TypeGuard from typing once minimum python supported version is 3.10
   from typing_extensions import TypeGuard
 
 T = TypeVar("T")
 U = TypeVar("U")
+_Scalar, _Iters  = Union[int, float, bool, bytes, type(None)], Union[List, Tuple]
+_Nested_Scalar = Union[_Scalar, List['_Nested_Scalar'], Tuple['_Nested_Scalar', ...]]
 # NOTE: it returns int 1 if x is empty regardless of the type of x
 def prod(x:Iterable[T]) -> Union[T,int]: return functools.reduce(operator.__mul__, x, 1)
 
@@ -50,6 +53,14 @@ def get_child(obj, key):
     elif isinstance(obj, dict): obj = obj[k]
     else: obj = getattr(obj, k)
   return obj
+def get_shape(x: _Nested_Scalar, _shape=tuple()) -> Tuple[int, ...]:
+  while isinstance(x, _Iters):
+    _shape += (len(x), )
+    shapes = tuple([get_shape(y) for y in x])
+    if not all(shapes[0] == s for s in shapes): raise ValueError("Inconsistent dimensions")
+    x = x[0]
+  if isinstance(x, _Scalar): return _shape
+  raise ValueError("Sequence must consist of numeric types")
 
 @functools.lru_cache(maxsize=None)
 def to_function_name(s:str): return ''.join([c if c in (string.ascii_letters+string.digits+'_') else f'{ord(c):02X}' for c in ansistrip(s)])
