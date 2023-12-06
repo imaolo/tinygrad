@@ -80,7 +80,7 @@ class Buffer:
     self.allocator.copyin(self._buf, mv)
     return self
   @staticmethod
-  def fromCPU(device:str, x:memoryview, dtype: DType): return Buffer(device, x.nbytes/dtype.itemsize, dtype).copyin(x)
+  def fromCPU(device:str, x:memoryview, dtype: DType): return Buffer(device, x.nbytes//dtype.itemsize, dtype).copyin(x)
   def toCPU(self) -> memoryview:
     # zero copy with as_buffer
     if hasattr(self.allocator, 'as_buffer'): return self.allocator.as_buffer(self._buf)
@@ -147,7 +147,9 @@ class LRUAllocator(Allocator):  # pylint: disable=abstract-method
     else: self._free(opaque)
 
 class _MallocAllocator(LRUAllocator):
-  def _alloc(self, size:int): return (ctypes.c_uint8 * size)()
+  def _alloc(self, size:int):
+    print(size)
+    return (ctypes.c_uint8 * size)()
   def as_buffer(self, src) -> memoryview: return flat_mv(memoryview(src))
   def copyin(self, dest, src:memoryview): ctypes.memmove(dest, from_mv(src), len(src))
   def copyout(self, dest:memoryview, src): ctypes.memmove(from_mv(dest), src, len(dest))
