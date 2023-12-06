@@ -178,11 +178,11 @@ class TetsGetShape(unittest.TestCase):
     test([[[i for i in range(10)] for _ in range(10)] for _ in range(10)])
     test([[1], [2]])
     test([[1,2,3], [1,2,3], [1,2,3]])
-    test([[[1],[2],[3.0]], [[1],[2],[3]], [[1],[None],[3]]])
+    test([[[1],[2],[3.0]], [[1],[2],[3]], [[1],[None],[np.float32(1)]]])
     test(1.0)
-    test('one', (ValueError, f"Sequence must consist of scalar types - {Scalar}"))
-    test([1, 2,'three'], (ValueError, f"Sequence must consist of scalar types - {Scalar}"))
-    test([[1,2,3], [4,5,6], [7,8,'nine']], (ValueError, f"Sequence must consist of scalar types - {Scalar}"))
+    test('one', (ValueError, f"Sequence must consist of scalar types - {Scalar} - {str}"))
+    test([1, 2, 'three'], (ValueError, f"Sequence must consist of scalar types - {Scalar} - {str}"))
+    test([[1,2,3], [4,5,6], [7,8,'nine']], (ValueError, f"Sequence must consist of scalar types - {Scalar} - {str}"))
     test([[[1],[2],[3]], [[1],[2,4],[3]], [[1],[2],[3]]], (ValueError, "Inconsistent dimensions"))
 
 
