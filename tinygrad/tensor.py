@@ -67,7 +67,7 @@ class Tensor:
       data, shape = to_mv([] if data is None else data, dt := (dtype or Tensor.default_type))
       data =  LazyBuffer.fromCPU(data, shape, dt)
     elif isinstance(data, bytes):
-      data = LazyBuffer.fromCPU(memoryview(data), len(data), dtypes.uint8)
+      data = LazyBuffer.fromCPU(memoryview(data), (len(data), ), dtypes.uint8)
     else:
       import numpy as np
       if isinstance(data, np.ndarray):
