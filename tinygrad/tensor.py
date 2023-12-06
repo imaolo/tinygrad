@@ -64,11 +64,11 @@ class Tensor:
     elif isinstance(data, (int, float)):
       data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or Tensor.default_type, device, data)
     elif data is None or data.__class__ is list:
-      data = [] if data is None else data
+      # data = [] if data is None else data
       import numpy as np
-      data1 = to_mv(data, shape := get_shape(data), (dtype or Tensor.default_type))
+      # data1, shape = to_mv(data, shape := get_shape(data), (dtype or Tensor.default_type))
       data = LazyBuffer.fromCPU(arr := np.array([] if data is None else data, dtype=(dtype or Tensor.default_type).np))
-      assert arr.shape == shape, f"{arr.shape}, {shape}" # during development
+      # assert arr.shape == shape, f"{arr.shape}, {shape}" # during development
     elif isinstance(data, bytes):
       import numpy as np
       data = LazyBuffer.fromCPU(np.frombuffer(data, np.uint8))
