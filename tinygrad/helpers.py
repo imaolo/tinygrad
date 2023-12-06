@@ -163,7 +163,7 @@ class dtypes:
     if isinstance(x, dtypes): return DTYPES_DICT[x.np]
     if isinstance(x, str): return DTYPES_DICT[x]
     x: np.dtype = x
-    return DTYPES_DICT[x.name] 
+    return DTYPES_DICT[x.name]
   @staticmethod
   def fields() -> Dict[str, DType]: return DTYPES_DICT
   bool: Final[DType] = DType(0, 1, "bool", "bool", ctypes.c_byte)
@@ -304,7 +304,7 @@ def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> Tuple[memoryview,
   shape = get_shape(l)
   for _ in range(len(shape) - 1): l = flatten(l)
   l = list(map(dtype.ctype, l))
-  buffer = (dtype.ctype * len(l))()  
+  buffer = (dtype.ctype * len(l))()
   buffer[:] = l[:]
   return memoryview(buffer), shape
 
