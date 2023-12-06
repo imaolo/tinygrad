@@ -57,7 +57,8 @@ def get_shape(x: Union[List, Scalar], _shape=tuple()) -> Tuple[int, ...]:
     _shape += (len(x), )
     shapes = tuple([get_shape(y) for y in x])
     if not all(shapes[0] == s for s in shapes): raise ValueError("Inconsistent dimensions")
-    x = x[0]
+    if len(x) > 0: x = x[0]
+    else: return _shape
   if isinstance(x, Scalar): return _shape
   raise ValueError(f"Sequence must consist of scalar types - {Scalar}")
 
