@@ -3,7 +3,6 @@ import sys, math
 from typing import Callable, Optional, Tuple, Union, List, Dict, Any, cast, Mapping, Set
 from weakref import ref, WeakSet, WeakValueDictionary
 
-import numpy as np
 from tinygrad.helpers import prod, getenv, DType, dtypes, flatten, dedup, merge_dicts, all_int, ImageDType, DEBUG
 from tinygrad.ops import ScheduleItem, UnaryOps, BinaryOps, TernaryOps, ReduceOps, MovementOps, LoadOps, OpType, LazyOp, MemBuffer, ConstBuffer, BufferOps, get_lazyop_info
 from tinygrad.shape.shapetracker import ShapeTracker, get_contraction
