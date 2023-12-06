@@ -300,7 +300,7 @@ def get_bytes(arg, get_sz, get_str, check) -> bytes: return (sz := init_c_var(ct
 def flat_mv(mv:memoryview):
   if len(mv) == 0: return mv
   return mv.cast("B", shape=(mv.nbytes,))
-def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> memoryview:
+def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> Tuple[memoryview, Tuple[int, ...]]:
   shape = get_shape(l)
   for _ in range(len(shape) - 1): l = flatten(l)
   l = list(map(dtype.ctype, l))

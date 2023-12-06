@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod, round_up, fetch, get_shape, Scalar, to_mv
 from tinygrad.shape.symbolic import Variable, NumNode
+from typing import List
 
 VARIABLE = ContextVar("VARIABLE", 0)
 
@@ -189,9 +190,15 @@ class TetsToMv(unittest.TestCase):
 
   def test_to_mv(self):
 
-    arr = [[[1],[2],[3]], [[1],[2],[3]], [[1],[2],[3]]]
-    mv, shape = to_mv(arr, dtypes.float)
-    assert np.array_equal(np.frombuffer(mv, dtype=dtypes.float32.np).reshape(shape), np.array(arr, dtype=dtypes.float32.np))
+    def test(l: list, dtype: DType):
+      mv, shape = to_mv(l, dtype)
+      print(mv.nbytes)
+      assert np.array_equal(np.frombuffer(mv, dtype=dtype.np).reshape(shape), np.array(l, dtype=dtype.np))
+
+    test([[[1],[2],[3]], [[1],[2],[3]], [[1],[2],[3]]], dtypes.float)
+    test([[[1],[2],[3]], [[1],[2],[3]], [[1],[2],[3]]], dtypes.float64)
+    test([[[1],[2],[3]], [[1],[2],[3]], [[1],[2],[3]]], dtypes.int)
+    test([[[1],[2]], [[1],[2]], [[1],[2]]], dtypes.int)
 
 
 

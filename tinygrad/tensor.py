@@ -63,7 +63,7 @@ class Tensor:
     if isinstance(data, LazyBuffer): assert dtype is None or dtype == data.dtype, "dtype doesn't match, and casting isn't supported"
     elif isinstance(data, (int, float)):
       data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or Tensor.default_type, device, data)
-    elif data is None or data.__class__ is list: 
+    elif data is None or data.__class__ is list:
       data = [] if data is None else data
       import numpy as np
       data1 = to_mv(data, shape := get_shape(data), (dtype or Tensor.default_type))
