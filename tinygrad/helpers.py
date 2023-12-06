@@ -10,8 +10,7 @@ if TYPE_CHECKING:  # TODO: remove this and import TypeGuard from typing once min
 
 T = TypeVar("T")
 U = TypeVar("U")
-_Scalar, _Iters  = Union[int, float, bool, bytes, type(None)], Union[List, Tuple]
-_Nested_Scalar = Union[_Scalar, List['_Nested_Scalar'], Tuple['_Nested_Scalar', ...]]
+Scalar = Union[int, float, bool, bytes, type(None)]
 # NOTE: it returns int 1 if x is empty regardless of the type of x
 def prod(x:Iterable[T]) -> Union[T,int]: return functools.reduce(operator.__mul__, x, 1)
 
@@ -53,14 +52,14 @@ def get_child(obj, key):
     elif isinstance(obj, dict): obj = obj[k]
     else: obj = getattr(obj, k)
   return obj
-def get_shape(x: _Nested_Scalar, _shape=tuple()) -> Tuple[int, ...]:
-  while isinstance(x, _Iters):
+def get_shape(x: Union[List, Scalar], _shape=tuple()) -> Tuple[int, ...]:
+  while isinstance(x, List):
     _shape += (len(x), )
     shapes = tuple([get_shape(y) for y in x])
     if not all(shapes[0] == s for s in shapes): raise ValueError("Inconsistent dimensions")
     x = x[0]
-  if isinstance(x, _Scalar): return _shape
-  raise ValueError("Sequence must consist of numeric types")
+  if isinstance(x, Scalar): return _shape
+  raise ValueError(f"Sequence must consist of scalar types - {Scalar}")
 
 @functools.lru_cache(maxsize=None)
 def to_function_name(s:str): return ''.join([c if c in (string.ascii_letters+string.digits+'_') else f'{ord(c):02X}' for c in ansistrip(s)])
@@ -291,7 +290,8 @@ def get_bytes(arg, get_sz, get_str, check) -> bytes: return (sz := init_c_var(ct
 def flat_mv(mv:memoryview):
   if len(mv) == 0: return mv
   return mv.cast("B", shape=(mv.nbytes,))
-
+def to_mv(l: List, shape: Tuple[int, ...], dtype: DType) -> memoryview:
+  return l
 # *** Helpers for CUDA-like APIs.
 
 def pretty_ptx(s):
