@@ -219,8 +219,8 @@ class LazyBuffer:
     return LazyBuffer.loadop(LoadOps.CONTIGUOUS, self.shape, self.dtype, self.device, src=self)
 
   @staticmethod
-  def fromCPU(x: np.ndarray) -> LazyBuffer:
-    return LazyBuffer("CPU", ShapeTracker.from_shape(x.shape), LoadOps, None, dtypes.from_np(x.dtype), Buffer("CPU", prod(x.shape), dtypes.from_np(x.dtype), x.flatten()))
+  def fromCPU(x: memoryview, shape: Tuple, dtype: DType) -> LazyBuffer:
+    return LazyBuffer("CPU", ShapeTracker.from_shape(shape), LoadOps, None, dtype, Buffer("CPU", prod(x.shape), dtype, x))
 
   def cast(self, dtype:DType, bitcast:bool=False):
     return self.e(UnaryOps.CAST, arg=(dtype, bitcast))
