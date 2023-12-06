@@ -64,14 +64,10 @@ class Tensor:
     elif isinstance(data, (int, float)):
       data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or Tensor.default_type, device, data)
     elif data is None or data.__class__ is list:
-      # data = [] if data is None else data
-      import numpy as np
-      data1, shape = to_mv(data, dtype := (dtype or Tensor.default_type))
-      data = LazyBuffer.fromCPU(arr := np.array([] if data is None else data, dtype=(dtype or Tensor.default_type).np))
-      assert arr.shape == shape, f"{arr.shape}, {shape}" # during development
+      data, shape = to_mv([] if data is None else data, dt := (dtype or Tensor.default_type))
+      data =  LazyBuffer.fromCPU(data, shape, dt)
     elif isinstance(data, bytes):
-      import numpy as np
-      data = LazyBuffer.fromCPU(np.frombuffer(data, np.uint8))
+      data = LazyBuffer.fromCPU(memoryview(data), len(data), dtypes.uint8)
     else:
       import numpy as np
       if isinstance(data, np.ndarray):
@@ -79,7 +75,8 @@ class Tensor:
         if data.shape == ():
           data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or dtypes.from_np(data.dtype), device, data.item())
         else:
-          data = LazyBuffer.fromCPU(data.astype(dtype.np) if dtype is not None and dtype.np is not None else data)
+          data = data.astype(dtype.np) if dtype is not None and dtype.np is not None else data
+          data = LazyBuffer.fromCPU(memoryview(data.data), data.shape, dtypes.from_np(data.dtype))
 
     # data is a LazyBuffer, but it might be on the wrong device
     if not isinstance(data, LazyBuffer): raise RuntimeError(f"can't create Tensor from {data!r} with type {type(data)}")
@@ -133,7 +130,7 @@ class Tensor:
     assert all_int(self.shape), f"no numpy if shape is symbolic, {self.shape=}"
     assert self.dtype.np is not None, f"no numpy dtype for {self.dtype}"
     if 0 in self.shape: return np.zeros(self.shape, dtype=self.dtype.np)
-    return self.detach().cast(dtypes.from_np(self.dtype.np)).contiguous().to('CPU').realize().lazydata.realized.toCPU().astype(self.dtype.np, copy=True).reshape(self.shape)
+    return np.frombuffer(self.detach().cast(dtypes.from_np(self.dtype.np)).contiguous().to('CPU').realize().lazydata.realized.toCPU(), dtype=self.dtype.np).astype(self.dtype.np, copy=True).reshape(self.shape)
   def item(self) -> Union[float, int]:
     assert self.numel() == 1, "must have one element for item"
     return self.realize().lazydata.realized.toCPU().item()
