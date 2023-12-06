@@ -167,7 +167,7 @@ class TetsGetShape(unittest.TestCase):
       if err_info:
         with self.assertRaises(err_info[0]) as ctx: get_shape(l)
         self.assertEqual(str(ctx.exception), err_info[1])
-      else: assert get_shape(l) == np.array(l).shape
+      else: self.assertEqual(get_shape(l),np.array(l).shape)
     test([])
     test([[], [], []])
     test(None)
