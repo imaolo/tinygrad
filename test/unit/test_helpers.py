@@ -164,18 +164,20 @@ class TetsGetShape(unittest.TestCase):
 
   def test_get_shape(self): # TODO: should probably fuzz this
     def test(l, err_info=None):
-      try: npres = np.array(l).shape
-      except: npres = None
       if err_info:
-        with self.assertRaises(err_info[0]) as ctx: assert get_shape(l) == np.array(l).shape
+        with self.assertRaises(err_info[0]) as ctx: get_shape(l)
         self.assertEqual(str(ctx.exception), err_info[1])
       else: assert get_shape(l) == np.array(l).shape
     test([])
+    test([[], [], []])
+    test(None)
+    test([None])
+    test([[None], [None], [None]])
     test([i for i in range(10)])
     test([[[i for i in range(10)] for _ in range(10)] for _ in range(10)])
     test([[1], [2]])
     test([[1,2,3], [1,2,3], [1,2,3]])
-    test([[[1],[2],[3.0]], [[1],[2],[3]], [[1],[2],[3]]])
+    test([[[1],[2],[3.0]], [[1],[2],[3]], [[1],[None],[3]]])
     test(1.0)
     test('one', (ValueError, f"Sequence must consist of scalar types - {Scalar}"))
     test([1, 2,'three'], (ValueError, f"Sequence must consist of scalar types - {Scalar}"))
