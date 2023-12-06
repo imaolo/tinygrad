@@ -129,12 +129,13 @@ class DType(NamedTuple):
     assert sz > 1 and self.sz == 1, f"can't vectorize {self} with size {sz}"
     return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, None, sz)
   def scalar(self): return DTYPES_DICT[self.name[:-len(str(self.sz))]] if self.sz > 1 else self
-  def to_ctype(self, x: Union[int, float]):
-    if self.ctype is not None:
-      if dtypes.is_int(self) and isinstance(x, float): x = int(x)
-      if dtypes.is_float(self) and isinstance(x, int): x = float(x)
-      return self.ctype(x)
-    raise RuntimeError(f"no ctype for {self}")
+  def to_ctype(self, x: Union[int, float, bool]):
+    if dtypes.is_int(self): x = int(x)
+    if dtypes.is_float(self): x = float(x)
+    if self is dtypes.bool: x = bool(x)
+    if self.ctype is not None: return self.ctype(x)
+    import numpy as np
+    return np.float16(x)
 
 # dependent typing?
 class ImageDType(DType):
@@ -310,6 +311,9 @@ def to_mv(l: Union[List, Scalar, np.generic], dtype: DType) -> Tuple[memoryview,
   shape = get_shape(l)
   for _ in range(len(shape) - 1): l = flatten(l)
   l = list(map(dtype.to_ctype, l))
+  if dtype.ctype is None:
+    import numpy as np
+    return memoryview(np.array(l).astype(dtype.np).data), shape
   buffer = (dtype.ctype * len(l))()
   buffer[:] = l[:]
   return memoryview(buffer), shape
