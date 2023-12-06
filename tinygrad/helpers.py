@@ -121,7 +121,7 @@ class DType(NamedTuple):
   priority: int  # this determines when things get upcasted
   itemsize: int
   name: str
-  np: Optional[type]  # TODO: someday this will be removed with the "remove numpy" project
+  np: Optional[str]  # TODO: someday this will be removed with the "remove numpy" project
   ctype: Type[_SimpleCData] = None
   sz: int = 1
   def __repr__(self): return f"dtypes.{INVERSE_DTYPES_DICT[self]}" if self.sz == 1 else f"dtypes._{INVERSE_DTYPES_DICT[self.scalar()]}{self.sz}"
@@ -162,7 +162,7 @@ class dtypes:
   def is_unsigned(x: DType) -> bool: return x in (dtypes.uint8, dtypes.uint16, dtypes.uint32, dtypes.uint64)
   @staticmethod
   def from_np(x) -> DType:
-    if isinstance(x, dtypes): return DTYPES_DICT[x.np]
+    if isinstance(x, DType): return DTYPES_DICT[x.np]
     if isinstance(x, str): return DTYPES_DICT[x]
     x: np.dtype = x
     return DTYPES_DICT[x.name]
