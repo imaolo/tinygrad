@@ -5,17 +5,17 @@ from tinygrad.lazy import LazyBuffer
 from tinygrad import Device
 from tinygrad.tensor import Tensor
 from tinygrad.jit import CacheCollector
-
+from tinygrad.helpers import dtypes
 class TestLazyBuffer(unittest.TestCase):
   @unittest.skip("it doesn't work like this anymore")
   def test_fromcpu_buffer_sharing(self):
     a = np.arange(8)
-    assert LazyBuffer.fromCPU(a).realized._buf is a
+    assert LazyBuffer.fromCPU(memoryview(a.data), a.shape, dtypes.from_np(a.dtype)).realized._buf is a
 
   def test_fromcpu_shape_tracker(self):
     def helper(a: np.ndarray):
       print(a.shape, a.strides, a.flags.c_contiguous)
-      b = LazyBuffer.fromCPU(a)
+      b = LazyBuffer.fromCPU(memoryview(a.data), a.shape, dtypes.from_np(a.dtype))
       #assert b.st.contiguous == a.flags.c_contiguous
       assert b.st.shape == a.shape
       np.testing.assert_equal(a, Tensor(b).numpy())

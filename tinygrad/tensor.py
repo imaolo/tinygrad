@@ -1,18 +1,20 @@
 # inspired by https://github.com/karpathy/micrograd/blob/master/micrograd/engine.py
 from __future__ import annotations
 import time, math
-from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Any, Iterable, Set, DefaultDict
+from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Any, Iterable, Set, DefaultDict, TYPE_CHECKING
 from collections import defaultdict
 from functools import partialmethod, reduce
 from itertools import accumulate
-import numpy as np
 
-from tinygrad.helpers import ImageDType, argfix, make_pair, getenv, IMAGE, DEBUG, flatten, DType, dtypes, prod, all_int, round_up
+from tinygrad.helpers import ImageDType, argfix, make_pair, getenv, IMAGE, DEBUG, flatten, DType, dtypes, prod, all_int, round_up, to_mv
 from tinygrad.lazy import LazyBuffer
 from tinygrad.ops import LoadOps
 from tinygrad.device import Device, Buffer
 from tinygrad.shape.symbolic import sint
 from tinygrad.realize import run_schedule
+
+if TYPE_CHECKING:
+  import numpy as np
 
 class Function:
   def __init__(self, device:str, *tensors:Tensor):
@@ -62,16 +64,19 @@ class Tensor:
     elif isinstance(data, (int, float)):
       data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or Tensor.default_type, device, data)
     elif data is None or data.__class__ is list:
-      assert dtype is None or dtype.np is not None, f"{dtype} doesn't have a numpy dtype"
-      data = LazyBuffer.fromCPU(np.array([] if data is None else data, dtype=(dtype or Tensor.default_type).np))
+      data, shape = to_mv([] if data is None else data, dt := (dtype or Tensor.default_type))
+      data =  LazyBuffer.fromCPU(data, shape, dt)
     elif isinstance(data, bytes):
-      data = LazyBuffer.fromCPU(np.frombuffer(data, np.uint8))
-    elif isinstance(data, np.ndarray):
-      assert dtype is None or dtype.np is not None, f"{dtype} doesn't have a numpy dtype"
-      if data.shape == ():
-        data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or dtypes.from_np(data.dtype), device, data.item())
-      else:
-        data = LazyBuffer.fromCPU(data.astype(dtype.np) if dtype is not None and dtype.np is not None else data)
+      data = LazyBuffer.fromCPU(memoryview(data), (len(data), ), dtypes.uint8)
+    else:
+      import numpy as np
+      if isinstance(data, np.ndarray):
+        assert dtype is None or dtype.np is not None, f"{dtype} doesn't have a numpy dtype"
+        if data.shape == ():
+          data = LazyBuffer.loadop(LoadOps.CONST, tuple(), dtype or dtypes.from_np(data.dtype), device, data.item())
+        else:
+          data = data.astype(dtype.np) if dtype is not None and dtype.np is not None else data
+          data = LazyBuffer.fromCPU(memoryview(data.data), data.shape, dtypes.from_np(data.dtype))
 
     # data is a LazyBuffer, but it might be on the wrong device
     if not isinstance(data, LazyBuffer): raise RuntimeError(f"can't create Tensor from {data!r} with type {type(data)}")
@@ -121,10 +126,11 @@ class Tensor:
 
   def detach(self) -> Tensor: return Tensor(self.lazydata, device=self.device, requires_grad=False)
   def numpy(self) -> np.ndarray:
+    import numpy as np
     assert all_int(self.shape), f"no numpy if shape is symbolic, {self.shape=}"
     assert self.dtype.np is not None, f"no numpy dtype for {self.dtype}"
     if 0 in self.shape: return np.zeros(self.shape, dtype=self.dtype.np)
-    return self.detach().cast(dtypes.from_np(self.dtype.np)).contiguous().to('CPU').realize().lazydata.realized.toCPU().astype(self.dtype.np, copy=True).reshape(self.shape)
+    return np.frombuffer(self.detach().cast(dtypes.from_np(self.dtype.np)).contiguous().to('CPU').realize().lazydata.realized.toCPU(), dtype=self.dtype.np).astype(self.dtype.np, copy=True).reshape(self.shape)
   def item(self) -> Union[float, int]:
     assert self.numel() == 1, "must have one element for item"
     return self.realize().lazydata.realized.toCPU().item()
@@ -852,6 +858,7 @@ if IMAGE:
 
 # TODO: remove the custom op and replace with threefry
 def custom_random(out:Buffer):
+  import numpy as np
   Tensor._seed += 1
   if DEBUG >= 2: print(f"***      rand {out.device} seed {Tensor._seed} size {out.size:<16d} dtype {out.dtype}")
   rng = np.random.default_rng(Tensor._seed)

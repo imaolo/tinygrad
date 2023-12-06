@@ -1,9 +1,8 @@
 import torch
-import numpy as np
 from typing import Dict, Callable
 from tinygrad.ops import BufferOps, UnaryOps, BinaryOps, MovementOps, TernaryOps, ReduceOps, Op
 from tinygrad.device import Interpreted, Allocator
-from tinygrad.helpers import getenv, dtypes
+from tinygrad.helpers import getenv, dtypes, to_mv
 from tinygrad.runtime.ops_cpu import einsum_mulacc, shape_to_axis
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else ("mps" if getenv("MPS", 0) else "cpu"))
@@ -17,6 +16,9 @@ def match_types(x, y, disallow_bool=False):
   return x.type(up), y.type(up)
 
 def as_strided(x, arg):
+  if isinstance(x, tuple): # I have no clue why we are getting tuples here now
+    assert len(x) == 1, len(x)
+    x = x[0]
   if any(i < 0 for i in arg[1]):
     return torch.as_strided(x.contiguous(), arg[0], tuple(abs(i) for i in arg[1]),
       arg[2] + sum((s-1)*a if a < 0 else 0 for (s,a) in zip(arg[0], arg[1]))).flip([i for i,a in enumerate(arg[1]) if a < 0])
@@ -25,7 +27,7 @@ def as_strided(x, arg):
 torch_fxn_for_op: Dict[Op, Callable] = {
   # TODO: torch.tensor should work here. it doesn't due to "overflow" in uint8
   #BufferOps.CONST: lambda val, dtype: torch.tensor(val, device=device, dtype=inverse_type_map[dtype]),
-  BufferOps.CONST: lambda val, dtype: torch.from_numpy(np.array(val, dtype=dtype.np)).to(device),
+  BufferOps.CONST: lambda val, dtype: torch.frombuffer(to_mv(val, dtype)[0], dtype=getattr(torch, dtype.np)).to(device),
   UnaryOps.SQRT: lambda x: x.sqrt(), UnaryOps.EXP2: lambda x: x.exp2(), UnaryOps.LOG2: lambda x: x.log2(), UnaryOps.SIN: torch.sin,
   UnaryOps.CAST: lambda x,y: (x.view if y[1] else x.type)(next(k for k,v in type_map.items() if v==y[0])), UnaryOps.NEG: lambda x: torch.logical_not(x) if x.dtype is torch.bool else torch.neg(x),
   BinaryOps.MAX: torch.maximum, BinaryOps.CMPLT: lambda x,y: (x<y).type(torch.promote_types(x.dtype, y.dtype)),
