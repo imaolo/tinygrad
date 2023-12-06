@@ -3,8 +3,9 @@ import os, functools, platform, time, re, contextlib, operator, hashlib, pickle,
 import numpy as np
 from urllib import request
 from tqdm import tqdm
-from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable, Sequence
+from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable, Type
 from collections.abc import Sequence
+from ctypes import _SimpleCData
 if TYPE_CHECKING:  # TODO: remove this and import TypeGuard from typing once minimum python supported version is 3.10
   from typing_extensions import TypeGuard
 
@@ -119,11 +120,12 @@ class DType(NamedTuple):
   itemsize: int
   name: str
   np: Optional[type]  # TODO: someday this will be removed with the "remove numpy" project
+  ctype: Type[_SimpleCData] = None
   sz: int = 1
   def __repr__(self): return f"dtypes.{INVERSE_DTYPES_DICT[self]}" if self.sz == 1 else f"dtypes._{INVERSE_DTYPES_DICT[self.scalar()]}{self.sz}"
   def vec(self, sz:int):
     assert sz > 1 and self.sz == 1, f"can't vectorize {self} with size {sz}"
-    return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, sz)
+    return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, None, sz)
   def scalar(self): return DTYPES_DICT[self.name[:-len(str(self.sz))]] if self.sz > 1 else self
 
 # dependent typing?
@@ -143,7 +145,7 @@ class ImageDType(DType):
   def __ne__(self, x): return super().__ne__(x) or self.shape != x.shape
 
 class PtrDType(DType):
-  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, dt.sz)
+  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, None, dt.sz)
   def __repr__(self): return f"ptr.{super().__repr__()}"
 
 class dtypes:
