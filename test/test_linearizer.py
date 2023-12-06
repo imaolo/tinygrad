@@ -11,6 +11,7 @@ from tinygrad.tensor import Tensor
 from tinygrad.jit import CacheCollector
 from tinygrad.realize import run_schedule
 from tinygrad.helpers import dtypes, prod
+from tinygrad.device import MallocAllocator
 
 class TestLinearizer(unittest.TestCase):
   def test_arg_dedup(self):
@@ -375,13 +376,14 @@ def helper_linearizer_opt(r:Tensor, opts=[], apply_tc=False):
   k = Linearizer(realized_ast)
   prg = Device[Device.DEFAULT].to_program(k)
   prg.exec(real_bufs)
-  wanna_output = real_bufs[0].toCPU().copy()
+  wanna_output = MallocAllocator.alloc(real_bufs[0].size * real_bufs[0].dtype.itemsize)
+  MallocAllocator.copyin(wanna_output, real_bufs[0].toCPU())
 
   # Check correctness of handcoded optimiztions.
   k = Linearizer(realized_ast)
   k.hand_coded_optimizations()
   prg = Device[Device.DEFAULT].to_program(k)
-  real_bufs[0].copyin(np.zeros((real_bufs[0].size, ), dtype=real_bufs[0].dtype.np).data) # Zero to check that all values are filled
+  real_bufs[0].copyin(memoryview(np.zeros((real_bufs[0].size, ), dtype=real_bufs[0].dtype.np).data)) # Zero to check that all values are filled
   prg.exec(real_bufs)
   np.testing.assert_allclose(wanna_output, real_bufs[0].toCPU(), atol=1e-4, rtol=1e-4)
   for x in opts: # Check custom transformations if any.
