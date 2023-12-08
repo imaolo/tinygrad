@@ -4,11 +4,13 @@ import numpy as np
 from urllib import request
 from tqdm import tqdm
 from typing import Dict, Tuple, Union, List, NamedTuple, Final, ClassVar, Optional, Iterable, Any, TypeVar, TYPE_CHECKING, Callable
+import struct
 if TYPE_CHECKING:  # TODO: remove this and import TypeGuard from typing once minimum python supported version is 3.10
   from typing_extensions import TypeGuard
 
 T = TypeVar("T")
 U = TypeVar("U")
+_Scalars = (int, float, bool, np.generic)
 # NOTE: it returns int 1 if x is empty regardless of the type of x
 def prod(x:Iterable[T]) -> Union[T,int]: return functools.reduce(operator.__mul__, x, 1)
 
@@ -108,11 +110,12 @@ class DType(NamedTuple):
   itemsize: int
   name: str
   np: Optional[type]  # TODO: someday this will be removed with the "remove numpy" project
+  structf: Optional[str] = None
   sz: int = 1
   def __repr__(self): return f"dtypes.{INVERSE_DTYPES_DICT[self]}" if self.sz == 1 else f"dtypes._{INVERSE_DTYPES_DICT[self.scalar()]}{self.sz}"
   def vec(self, sz:int):
     assert sz > 1 and self.sz == 1, f"can't vectorize {self} with size {sz}"
-    return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, sz)
+    return DType(self.priority, self.itemsize*sz, self.name+str(sz), None, None, sz)
   def scalar(self): return DTYPES_DICT[self.name[:-len(str(self.sz))]] if self.sz > 1 else self
 
 # dependent typing?
@@ -132,7 +135,7 @@ class ImageDType(DType):
   def __ne__(self, x): return super().__ne__(x) or self.shape != x.shape
 
 class PtrDType(DType):
-  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, dt.sz)
+  def __new__(cls, dt:DType): return super().__new__(cls, dt.priority, dt.itemsize, dt.name, dt.np, dt.structf, dt.sz)
   def __repr__(self): return f"ptr.{super().__repr__()}"
 
 class dtypes:
@@ -146,22 +149,22 @@ class dtypes:
   def from_np(x) -> DType: return DTYPES_DICT[np.dtype(x).name]
   @staticmethod
   def fields() -> Dict[str, DType]: return DTYPES_DICT
-  bool: Final[DType] = DType(0, 1, "bool", np.bool_)
-  float16: Final[DType] = DType(9, 2, "half", np.float16)
+  bool: Final[DType] = DType(0, 1, "bool", np.bool_, '?')
+  float16: Final[DType] = DType(9, 2, "half", np.float16, 'e')
   half = float16
-  float32: Final[DType] = DType(10, 4, "float", np.float32)
+  float32: Final[DType] = DType(10, 4, "float", np.float32, 'f')
   float = float32
-  float64: Final[DType] = DType(11, 8, "double", np.float64)
+  float64: Final[DType] = DType(11, 8, "double", np.float64, 'd')
   double = float64
-  int8: Final[DType] = DType(1, 1, "char", np.int8)
-  int16: Final[DType] = DType(3, 2, "short", np.int16)
-  int32: Final[DType] = DType(5, 4, "int", np.int32)
+  int8: Final[DType] = DType(1, 1, "char", np.int8, 'b')
+  int16: Final[DType] = DType(3, 2, "short", np.int16, 'h')
+  int32: Final[DType] = DType(5, 4, "int", np.int32, 'i')
   int = int32
-  int64: Final[DType] = DType(7, 8, "long", np.int64)
-  uint8: Final[DType] = DType(2, 1, "unsigned char", np.uint8)
-  uint16: Final[DType] = DType(4, 2, "unsigned short", np.uint16)
-  uint32: Final[DType] = DType(6, 4, "unsigned int", np.uint32)
-  uint64: Final[DType] = DType(8, 8, "unsigned long", np.uint64)
+  int64: Final[DType] = DType(7, 8, "long", np.int64, 'q')
+  uint8: Final[DType] = DType(2, 1, "unsigned char", np.uint8, 'B')
+  uint16: Final[DType] = DType(4, 2, "unsigned short", np.uint16, 'H')
+  uint32: Final[DType] = DType(6, 4, "unsigned int", np.uint32, 'I')
+  uint64: Final[DType] = DType(8, 8, "unsigned long", np.uint64, 'Q')
 
   # NOTE: bfloat16 isn't supported in numpy
   bfloat16: Final[DType] = DType(9, 2, "__bf16", None)
@@ -280,6 +283,13 @@ def get_bytes(arg, get_sz, get_str, check) -> bytes: return (sz := init_c_var(ct
 def flat_mv(mv:memoryview):
   if len(mv) == 0: return mv
   return mv.cast("B", shape=(mv.nbytes,))
+def get_mv(x: Any, dtype: DType, _shape=tuple()) -> memoryview:
+  def _validate(x):
+    if isinstance(x, list): assert len({len(y) if isinstance(y, list) else 0 for y in x}) <= 1 and all(_validate(y) is None for y in x), "Inconsistent dimensions"
+    else: assert isinstance(x, _Scalars), f"Invalid element type {type(x)} - Valid types: {_Scalars}"
+  _validate(l := x)
+  while isinstance(x, list): _shape, x, l = _shape + (len(x), ), x[0] if (xl := len(x)) > 0 else 1, flatten(l) if xl > 0 and isinstance(x[0], list) else l
+  return memoryview(b'') if not l and len(_shape) == 1 else memoryview(struct.pack(f'{len(l)}{dtype.structf}', *l if not dtypes.is_int(dtype) else list(map(int, l)))).cast(dtype.structf if dtype.structf else 'badform', _shape) if dtype != dtypes.float16 else np.array(l, dtype=dtype.np).reshape(_shape).data
 
 # *** Helpers for CUDA-like APIs.
 
