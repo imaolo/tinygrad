@@ -20,7 +20,6 @@ def train_retinanet():
   pass
 
 def train_unet3d():
-  import pycuda.autoinit
 
   def train_single_unet3d(conf):
     is_successful, diverged = False, False
