@@ -280,7 +280,7 @@ class LazyBuffer:
 
   def expand(self: LazyBuffer, arg:Tuple[sint, ...]) -> LazyBuffer:
     if self.shape == arg: return self
-    if not self.realized and self.op.op == MovementOps.EXPAND: return self.op.src[0].expand(arg)
+    if not self.realized and self.op.op == MovementOps.EXPAND and not (src:=self.op.src[0]).is_unrealized_const(): return src.expand(arg)
     return self._movement_op(self.st.expand(arg), MovementOps.EXPAND, arg)
 
   def permute(self: LazyBuffer, arg:Tuple[int, ...]) -> LazyBuffer:
