@@ -4,7 +4,7 @@ import time, math
 from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Any, Iterable, Set, DefaultDict, cast
 from collections import defaultdict
 from functools import partialmethod, reduce
-from itertools import accumulate
+from itertools import accumulate, cycle
 import numpy as np
 
 from tinygrad.helpers import DType, dtypes, ImageDType
@@ -280,7 +280,7 @@ class Tensor:
     return mlops.Reshape.apply(self, shape=tuple([-prod(self.shape) // prod(new_shape) if s == -1 else (s if s is not None else self.shape[i]) for i,s in enumerate(new_shape)]))  # noqa: E501
   def expand(self, shape, *args) -> Tensor:
     if shape == self.shape: return self
-    return mlops.Expand.apply(self, shape=tuple([x if x != -1 else s for s,x in zip(self.shape, argfix(shape, *args))]))
+    return mlops.Expand.apply(self, shape=tuple([x if x != -1 else s for s,x in zip(self.shape or cycle([1]), argfix(shape, *args))]))
   def permute(self, order, *args) -> Tensor: return mlops.Permute.apply(self, order=argfix(order, *args))
   def flip(self, axis, *args) -> Tensor: return mlops.Flip.apply(self, axis=[x if x >= 0 else x+len(self.shape) for x in argfix(axis, *args)])
   def shrink(self, arg:Tuple[Optional[Tuple[sint, sint]], ...]) -> Tensor:
