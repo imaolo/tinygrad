@@ -8,7 +8,7 @@ from tinygrad.helpers import colored, getenv
 
 def lower_schedule_item(si:ScheduleItem) -> Optional[JITRunner]:
   assert all(si.out.device == x.device for x in si.inputs) or si.ast.op is LoadOps.COPY, f"all devices must be the same, {si.out.device} != {[x.device for x in si.inputs]} {print_tree(si.ast) or ''}"  # noqa: E501
-  
+
   # precompilation, filter illegal ops
   if si.ast.op in {LoadOps.EMPTY, LoadOps.COPY, LoadOps.CUSTOM}: return si.ast.arg
 
