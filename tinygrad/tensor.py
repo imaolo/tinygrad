@@ -1,6 +1,6 @@
 # inspired by https://github.com/karpathy/micrograd/blob/master/micrograd/engine.py
 from __future__ import annotations
-import time, math, itertools
+import math, itertools
 from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Iterable, DefaultDict, cast, get_args
 from collections import defaultdict
 from functools import partialmethod, reduce
@@ -11,7 +11,7 @@ from tinygrad.helpers import argfix, make_pair, getenv, IMAGE, DEBUG, flatten, p
 from tinygrad.lazy import LazyBuffer, create_schedule
 from tinygrad.features.multi import MultiLazyBuffer
 from tinygrad.ops import LoadOps
-from tinygrad.device import Device, Buffer
+from tinygrad.device import Device, Buffer, RandNumpy
 from tinygrad.shape.symbolic import sint
 from tinygrad.realize import run_schedule
 
@@ -176,12 +176,11 @@ class Tensor:
   @staticmethod
   def empty(*shape, **kwargs): return Tensor._loadop(LoadOps.EMPTY, argfix(*shape), **kwargs)
 
-  _seed: int = int(time.time())
   @staticmethod
-  def manual_seed(seed=0): Tensor._seed = seed
+  def manual_seed(seed=0): Device._seed = seed
 
   @staticmethod
-  def rand(*shape, **kwargs): return Tensor._loadop(LoadOps.CUSTOM, argfix(*shape), arg=custom_random, **kwargs)
+  def rand(*shape, **kwargs): return Tensor._loadop(LoadOps.CUSTOM, argfix(*shape), arg=RandNumpy, **kwargs)
 
   # ***** creation helper functions *****
 
@@ -944,11 +943,3 @@ if IMAGE:
   from tinygrad.features.image import image_conv2d, image_dot
   setattr(Tensor, "conv2d", image_conv2d)
   setattr(Tensor, "dot", image_dot)
-
-# TODO: remove the custom op and replace with threefry
-def custom_random(out:Buffer):
-  Tensor._seed += 1
-  if DEBUG >= 2: print(f"*** {out.device}   rand  seed {Tensor._seed} size {out.size:<15d} dtype {out.dtype}")
-  rng = np.random.default_rng(Tensor._seed)
-  rng_np_buffer = rng.random(size=out.size, dtype=np.float32).astype(dtype=out.dtype.np, copy=False)
-  out.copyin(rng_np_buffer.data)

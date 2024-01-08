@@ -7,7 +7,7 @@ from tinygrad.helpers import prod, merge_dicts, flatten, getenv, dedup, DEBUG, a
 from tinygrad.ops import LoadOps, UnaryOps, BinaryOps, TernaryOps, ReduceOps, BufferOps, Op, LazyOp, ConstBuffer, MemBuffer, ScheduleItem
 from tinygrad.shape.symbolic import sint, Variable
 from tinygrad.shape.shapetracker import ShapeTracker
-from tinygrad.device import Buffer, Device
+from tinygrad.device import Buffer, Device, BufferCopy
 from tinygrad.graph import log_lazybuffer
 from weakref import ref, WeakSet, WeakValueDictionary, ReferenceType
 
@@ -101,10 +101,10 @@ class LazyBuffer:
     # if it's a shrink, do the shrink before the copy with CONTIGUOUS
     # TODO: why is this required on WEBGPU?
     if prod(self.st.shape) < prod(self.base.st.shape) or device == "WEBGPU":
-      return create_lazybuffer(device, ShapeTracker.from_shape(self.shape), self.dtype, LoadOps.COPY, srcs=(self.contiguous(),))
+      return create_lazybuffer(device, ShapeTracker.from_shape(self.shape), self.dtype, LoadOps.COPY, srcs=(lb:=self.contiguous(),), arg=lb)
 
     # copy the base and apply the shapetracker on the new device
-    return create_lazybuffer(device, self.base.st, self.dtype, LoadOps.COPY, srcs=(self.base,))._view(self.st)
+    return create_lazybuffer(device, self.base.st, self.dtype, LoadOps.COPY, srcs=(lb:=self.base,), arg=lb)._view(self.st)
 
   def e(self, op:Union[LoadOps, UnaryOps, BinaryOps, TernaryOps], *in_srcs:LazyBuffer, arg:Optional[Any]=None) -> LazyBuffer:
     srcs: List[LazyBuffer] = []
@@ -200,11 +200,11 @@ def _recursive_schedule(out:LazyBuffer, seen:Set[LazyBuffer], realizes:Set[LazyB
   inputs: List[LazyBuffer] = []
   var_vals: Dict[Variable, int] = out.st.var_vals.copy()
   if out.op == LoadOps.COPY:
-    op, inputs = LazyOp(LoadOps.COPY, (), out.srcs[0].base), [out.srcs[0].base]
+    op, inputs = LazyOp(LoadOps.CUSTOM, (), BufferCopy), [out.arg.base]
   elif out.op == LoadOps.CUSTOM:
     op, inputs = LazyOp(LoadOps.CUSTOM, (), out.arg), list(out.srcs)
   elif out.op == LoadOps.EMPTY:
-    op = LazyOp(LoadOps.EMPTY)
+    op = LazyOp(LoadOps.CUSTOM)
   else:
     output_st = ShapeTracker.from_shape(reduce_for_op[out].shape if out in reduce_for_op else out.shape).unbind()
     op = _recursive_lazyop(out, inputs, var_vals, output_st, realizes)
@@ -234,8 +234,8 @@ def _recurse_lb(buf:LazyBuffer, realizes:Set[LazyBuffer], allbufs:Dict[LazyBuffe
   allbufs[buf] = None
   if buf.op in LoadOps: realizes.add(buf.base)
   if buf.op == LoadOps.COPY:
-    assert buf.srcs[0].st.contiguous, "can only copy contig"
-    realizes.add(buf.srcs[0].base)
+    assert buf.arg.st.contiguous, "can only copy contig"
+    realizes.add(buf.arg.base)
   for x in buf.srcs: _recurse_lb(x, realizes, allbufs, simple_pads)
 
 UNSAFE_PAD_OPS = {BinaryOps.DIV, BinaryOps.CMPLT, BinaryOps.CMPEQ, UnaryOps.LOG2, UnaryOps.EXP2, UnaryOps.RECIP}

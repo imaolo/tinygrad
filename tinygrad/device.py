@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 # **************** Device ****************
 
 class _Device:
+  _seed: int = int(time.time())
   def __init__(self) -> None: self._buffers: List[str] = [x.stem[len("ops_"):].upper() for x in (pathlib.Path(__file__).parent/"runtime").iterdir() if x.stem.startswith("ops_")]  # noqa: E501
   def canonicalize(self, device:Optional[str]) -> str: return (device.split(":", 1)[0].upper() + ((":"+device.split(":", 1)[1]) if ':' in device else '')).replace(":0", "") if device is not None else self.DEFAULT  # noqa: E501
   def __getitem__(self, ix:str) -> Union[Interpreted, Compiled]: return self.__get_canonicalized_item(self.canonicalize(ix))
@@ -132,6 +133,16 @@ class _BufferCopy(JITRunner):
       et = time.perf_counter() - st
     update_stats(colored(f"copy {dest.size:8d}, {dest.device[:7]:>7s} <- {src.device[:7]:7s}", "yellow"), 0, dest.size*dest.dtype.itemsize, {}, et, 2, jit, device=dest.device)  # noqa: E501
 BufferCopy = _BufferCopy()
+
+# TODO: remove the custom op and replace with threefry
+class _RandNumpy(JITRunner):
+  def __call__(self, rawbufs:List[Buffer], var_vals:Dict[Variable, int], wait=False, jit=False):
+    assert len(rawbufs) == 1, f"{len(rawbufs)=}"
+    Device._seed += 1
+    if DEBUG >= 2: print(f"*** {rawbufs[0].device}   rand  seed {Device._seed} size {rawbufs[0].size:<15d} dtype {rawbufs[0].dtype}")
+    rng_np_buffer = np.random.default_rng(Device._seed).random(size=rawbufs[0].size, dtype=np.float32).astype(dtype=rawbufs[0].dtype.np, copy=False)
+    rawbufs[0].copyin(rng_np_buffer.data)
+RandNumpy = _RandNumpy()
 
 # TODO: size, dest, src are the same type. can we enforce this?
 sz_type = Union[ImageDType, int]
