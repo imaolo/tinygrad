@@ -1,6 +1,6 @@
 # inspired by https://github.com/karpathy/micrograd/blob/master/micrograd/engine.py
 from __future__ import annotations
-import time, math, itertools
+import math, itertools
 from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Iterable, DefaultDict, cast, get_args
 from collections import defaultdict
 from functools import partialmethod, reduce
