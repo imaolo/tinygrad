@@ -11,7 +11,7 @@ from tinygrad.helpers import argfix, make_pair, getenv, IMAGE, DEBUG, flatten, p
 from tinygrad.lazy import LazyBuffer, create_schedule
 from tinygrad.features.multi import MultiLazyBuffer
 from tinygrad.ops import LoadOps
-from tinygrad.device import Device, Buffer
+from tinygrad.device import Device, Buffer, RandNumpy
 from tinygrad.shape.symbolic import sint
 from tinygrad.realize import run_schedule
 
@@ -178,10 +178,10 @@ class Tensor:
 
   _seed: int = int(time.time())
   @staticmethod
-  def manual_seed(seed=0): Tensor._seed = seed
+  def manual_seed(seed=0): Device._seed = seed
 
   @staticmethod
-  def rand(*shape, **kwargs): return Tensor._loadop(LoadOps.CUSTOM, argfix(*shape), arg=custom_random, **kwargs)
+  def rand(*shape, **kwargs): return Tensor._loadop(LoadOps.CUSTOM, argfix(*shape), arg=RandNumpy, **kwargs)
 
   # ***** creation helper functions *****
 
