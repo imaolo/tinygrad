@@ -1,9 +1,8 @@
-from typing import List, Dict, Optional, cast
+from typing import List, Optional, cast
 from tinygrad.ops import LoadOps, ScheduleItem, BufferOps, GlobalCounters
-from tinygrad.device import Device, Buffer, BufferCopy, JITRunner, update_stats, InterpretedASTRunner
+from tinygrad.device import Device, Buffer, JITRunner, update_stats, InterpretedASTRunner
 from tinygrad.graph import print_tree, realized_lazybuffer
 from tinygrad.helpers import colored, getenv
-from tinygrad.shape.symbolic import Variable
 
 # *** schedule running ***
 
