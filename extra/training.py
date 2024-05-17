@@ -56,3 +56,6 @@ def evaluate(model, X_test, Y_test, num_classes=None, BS=128, return_predict=Fal
   print("test set accuracy is %f" % acc)
   return (acc, Y_test_pred) if return_predict else acc
 
+def lr_warmup(optim, init_lr, lr, current_epoch, warmup_epochs):
+  scale = current_epoch / warmup_epochs
+  optim.lr = init_lr + (lr - init_lr) * scale
