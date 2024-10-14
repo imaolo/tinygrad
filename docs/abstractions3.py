@@ -48,7 +48,6 @@ for si in schedule: print(str(si)[:80])
 # 4. Lower a schedule.
 
 from tinygrad.engine.realize import lower_schedule_item, ExecItem
-ExecItem(lower_schedule_item(si).prg, list(si.bufs))
 lowered: List[ExecItem] = flatten([ExecItem(runner.prg, list(si.bufs)) for runner in lower_schedule_item(si) for si in tqdm(schedule)])
 
 # *****
