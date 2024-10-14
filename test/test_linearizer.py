@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union, cast
+from typing import List, Tuple, Union
 import numpy as np
 import unittest
 from dataclasses import replace
