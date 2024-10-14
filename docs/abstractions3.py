@@ -1,7 +1,7 @@
 # abstractions2 goes from back to front, here we will go from front to back
 from typing import List
 from tqdm import tqdm
-from tinygrad.helpers import DEBUG
+from tinygrad.helpers import DEBUG, flatten
 
 # *****
 # 0. Load mnist on the device
@@ -48,7 +48,8 @@ for si in schedule: print(str(si)[:80])
 # 4. Lower a schedule.
 
 from tinygrad.engine.realize import lower_schedule_item, ExecItem
-lowered: List[ExecItem] = [ExecItem(lower_schedule_item(si).prg, list(si.bufs)) for si in tqdm(schedule)]
+ExecItem(lower_schedule_item(si).prg, list(si.bufs))
+lowered: List[ExecItem] = flatten([ExecItem(runner.prg, list(si.bufs)) for runner in lower_schedule_item(si) for si in tqdm(schedule)])
 
 # *****
 # 5. Run the schedule
