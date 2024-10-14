@@ -34,7 +34,7 @@ def _get_test_global_size(global_size, max_global_size, var_vals):
 
 def _time_program(ps:List[Program], libs:List[bytes], var_vals:Dict[Variable, int], rawbufs:List[Buffer], early_stop:Optional[float]=None,
                   max_global_size:Optional[int]=65536, clear_l2=False, cnt=3, name="test") -> List[float]:
-  tms = [0] * cnt
+  tms = [0.0] * cnt
   for idx, (p, lib) in enumerate(zip(ps, libs)):
     factor = 1
     if p.global_size is not None and max_global_size is not None:
@@ -48,7 +48,7 @@ def _time_program(ps:List[Program], libs:List[bytes], var_vals:Dict[Variable, in
         if hasattr(dev:=Device[p.dname], 'invalidate_caches'): dev.invalidate_caches()
         else:
           with Context(DEBUG=0, BEAM=0, CAPTURING=0): Tensor.ones(1024,1024).contiguous().realize(do_update_stats=False)
-      tms[idx] += (cast(float, car(input_bufs, var_vals, wait=True))*factor)
+      tms[int(idx)] += (cast(float, car(input_bufs, var_vals, wait=True))*factor)
       if early_stop is not None and early_stop < min(new_tms:=tms[:idx+1]):
         tms = new_tms
         break
@@ -159,7 +159,7 @@ def beam_search(lin:Kernel, rawbufs:List[Buffer], amt:int, allow_test_size=True,
         if least_compute_ops*1000 < this_compute_ops: continue
         #print(acted_lins[i].colored_shape(), acted_lins[i].applied_opts)  # for debugging BEAMs that segfault
         seen_libs.add(libs)
-        try: tms = _time_program(ps, libs, var_vals, rawbufs, early_stop=beam[0][1]*3 if len(beam) else 1.0,
+        try: tms = _time_program(cast(List[Program], ps), cast(List[bytes], libs), var_vals, rawbufs, early_stop=beam[0][1]*3 if len(beam) else 1.0,
                                  clear_l2=hasattr(dev, 'invalidate_caches'))
         except RuntimeError: continue # for runtime issues
         timed_lins.append((acted_lins[i], min(tms)))
