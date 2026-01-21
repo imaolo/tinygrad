@@ -4,7 +4,7 @@ from collections import deque
 from tinygrad.uop.ops import UOp, Ops, buffers, UOpMetaClass, track_rewrites, PatternMatcher, UPat, graph_rewrite, graph_rewrite_map
 from tinygrad.uop.spec import type_verify, tensor_spec
 from tinygrad.device import Buffer, MultiBuffer
-from tinygrad.helpers import DEBUG, cpu_profile, TracingKey, SPEC, flatten, pluralize
+from tinygrad.helpers import DEBUG, cpu_profile, TracingKey, SPEC, flatten, pluralize, SCACHE
 from tinygrad.engine.realize import ExecItem
 
 # **** schedule linearizer
@@ -118,33 +118,9 @@ pm_pre_sched_cache = PatternMatcher([
   (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR), UPat(Ops.CONST)), name="b"), strip_bind),
 ])
 
-def replace_input_buffer_back(ctx:dict[UOp, UOp], b:UOp):
-  if (ret:=ctx.get(b, None)) is None:
-    assert b.op is Ops.BUFFER
-    # if it's not in the cache, create a new buffer
-    ctx[b] = ret = UOp.new_buffer(b.device, b.arg, b.dtype)
-  return ret
-
-pm_post_sched_cache = PatternMatcher([
-  (UPat(Ops.BUFFER, src=(UPat(Ops.LUNIQUE), UPat(Ops.DEVICE)), name="b"), replace_input_buffer_back),
-  (UPat(Ops.CONST, src=(UPat(Ops.DEVICE), UPat(Ops.LUNIQUE)), name="b"), replace_input_buffer_back),
-  # restore BIND value stripped in pm_pre_sched_cache
-  (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR),), name="b"), lambda ctx,b: ctx.get(b)),
-])
-
 schedule_cache: dict[bytes, tuple[list[ExecItem], UOp]] = {}
-@track_rewrites(lambda _,ret: f"Schedule {pluralize('Kernel', len(ret[1]))}")
-def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[dict[UOp, UOp], list[ExecItem], dict[str, int]]:
-  # big_sink srcs are all the Tensors
-  st = time.perf_counter()
-
-  # replace all UNIQUE buffers with LUNIQUE, strip BIND values for cache key, extract var_vals
-  input_buffers: dict[UOp, UOp] = {}
-  var_vals: dict[str, int] = {}
-  big_sink_cache = graph_rewrite(big_sink, pm_pre_sched_cache, ctx=(input_buffers, var_vals), name="rewrite for sched cache")
-  sched_cache_key = big_sink_cache.key
-
-  if (sc_ret:=schedule_cache.get(sched_cache_key, None)) is None:
+def create_pre_schedule(big_sink: UOp, big_sink_cache: UOp) -> tuple[list[ExecItem], UOp, bool]:
+  if not SCACHE or (sc_ret:=schedule_cache.get(big_sink_cache.key, None)) is None:
     # verify Tensors match the spec (on big_sink, we only need to do this if cache misses)
     if SPEC: type_verify(big_sink, tensor_spec)
 
@@ -168,11 +144,38 @@ def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[dict[UOp, UOp], li
     after_map = [(u, u.buf_uop) for u in big_sink.toposort() if u.op is Ops.AFTER]
     tensor_map_sink = UOp.sink(*flatten([(k,v) for k,v in tensor_map.items()]), *flatten(after_map))
     combined_sink = UOp.sink(tensor_map_sink, buf_uops_sink)
-    schedule_cache[sched_cache_key] = (pre_schedule, combined_sink)
+    if SCACHE: schedule_cache[big_sink_cache.key] = (pre_schedule, combined_sink)
+    return pre_schedule, combined_sink, False
   else:
     # schedule cache hit
     del big_sink_cache
-    pre_schedule, combined_sink = sc_ret
+    return *sc_ret, True
+
+def replace_input_buffer_back(ctx:dict[UOp, UOp], b:UOp):
+  if (ret:=ctx.get(b, None)) is None:
+    assert b.op is Ops.BUFFER
+    # if it's not in the cache, create a new buffer
+    ctx[b] = ret = UOp.new_buffer(b.device, b.arg, b.dtype)
+  return ret
+
+pm_post_sched_cache = PatternMatcher([
+  (UPat(Ops.BUFFER, src=(UPat(Ops.LUNIQUE), UPat(Ops.DEVICE)), name="b"), replace_input_buffer_back),
+  (UPat(Ops.CONST, src=(UPat(Ops.DEVICE), UPat(Ops.LUNIQUE)), name="b"), replace_input_buffer_back),
+  # restore BIND value stripped in pm_pre_sched_cache
+  (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR),), name="b"), lambda ctx,b: ctx.get(b)),
+])
+
+@track_rewrites(lambda _,ret: f"Schedule {pluralize('Kernel', len(ret[1]))}")
+def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[dict[UOp, UOp], list[ExecItem], dict[str, int]]:
+  # big_sink srcs are all the Tensors
+  st = time.perf_counter()
+
+  # replace all UNIQUE buffers with LUNIQUE, strip BIND values for cache key, extract var_vals
+  input_buffers: dict[UOp, UOp] = {}
+  var_vals: dict[str, int] = {}
+  big_sink_cache = graph_rewrite(big_sink, pm_pre_sched_cache, ctx=(input_buffers, var_vals), name="rewrite for sched cache")
+
+  pre_schedule, combined_sink, cache_hit = create_pre_schedule(big_sink, big_sink_cache)
 
   # replace all the LUNIQUEs with UNIQUEs (single graph_rewrite for everything)
   input_buffers_reverse = {v:k for k,v in input_buffers.items()}
@@ -203,6 +206,6 @@ def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[dict[UOp, UOp], li
 
   if (DEBUG >= 1 and len(schedule) > 1) or DEBUG >= 3:
     print(f"scheduled {len(schedule):4d} kernels in {(time.perf_counter()-st)*1000:8.2f} ms"+\
-          f" | {' cache hit' if sc_ret is not None else 'CACHE MISS'} {sched_cache_key.hex()[:8]}"+\
+          f" | {' cache hit' if cache_hit else 'CACHE MISS'} {big_sink_cache.key.hex()[:8]}"+\
           f" | {len(UOpMetaClass.ucache)} uops in cache")
   return tensor_map, schedule, var_vals if schedule else {}

@@ -2,10 +2,19 @@ import unittest
 import functools
 from tinygrad import Tensor, Variable, UOp, Context
 from tinygrad.uop.ops import KernelInfo
-from tinygrad.engine.schedule import schedule_cache
+from tinygrad.engine.schedule import schedule_cache, pm_pre_sched_cache, create_pre_schedule
+from tinygrad.engine.realize import ExecItem
+from tinygrad.uop.ops import graph_rewrite
 
 def custom_set0_kernel(A:UOp, num:int) -> UOp:
   return A[0].set(num).sink(arg=KernelInfo(f"custom_set0_{num}"))
+
+def schedule_one() -> tuple[ExecItem, bool]:
+  big_sink = UOp.sink(Tensor([1]).uop)
+  big_sink_cache = graph_rewrite(big_sink, pm_pre_sched_cache, ctx=({}, {}), name="schedule_one")
+  pre_schedule, _, cache_hit = create_pre_schedule(big_sink, big_sink_cache)
+  ei, = pre_schedule
+  return ei, cache_hit
 
 class TestScheduleCache(unittest.TestCase):
   def test_bound_variable_reuses_cache(self):
@@ -74,6 +83,33 @@ class TestScheduleCache(unittest.TestCase):
       num = (a.sum().contiguous()+b.sum().contiguous()).item()
       print(num)
     self.assertEqual(len(schedule_cache), start_len_schedule_cache)
+
+  def test_disable_schedule_cache(self):
+    schedule_cache.clear()
+
+    # test write disabled
+    with Context(SCACHE=0):
+      ei, hit = schedule_one()
+    self.assertFalse(hit)
+    self.assertEqual(len(schedule_cache), 0)
+
+    # test read/write enabled
+    with Context(SCACHE=1):
+      ei1, hit1 = schedule_one()
+      ei2, hit2 = schedule_one()
+    self.assertFalse(hit1)
+    self.assertTrue(hit2)
+    self.assertEqual(len(schedule_cache), 1)
+    ((cached_ei,), _),  = list(schedule_cache.values())
+    self.assertEqual(id(cached_ei), id(ei1))
+    self.assertEqual(id(cached_ei), id(ei2))
+
+    # test read disabled
+    with Context(SCACHE=0):
+      ei, hit = schedule_one()
+    self.assertFalse(hit)
+    ((cached_ei,), _),  = list(schedule_cache.values())
+    self.assertNotEqual(id(cached_ei), id(ei))
 
 if __name__ == "__main__":
   unittest.main()
