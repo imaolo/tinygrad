@@ -9,7 +9,7 @@ from tinygrad.uop.ops import graph_rewrite
 def custom_set0_kernel(A:UOp, num:int) -> UOp:
   return A[0].set(num).sink(arg=KernelInfo(f"custom_set0_{num}"))
 
-def schedule_one() -> tuple[ExecItem, bool] :
+def schedule_one() -> tuple[ExecItem, bool]:
   big_sink = UOp.sink(Tensor([1]).uop)
   big_sink_cache = graph_rewrite(big_sink, pm_pre_sched_cache, ctx=({}, {}), name="schedule_one")
   pre_schedule, _, cache_hit = create_pre_schedule(big_sink, big_sink_cache)
