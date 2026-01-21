@@ -118,20 +118,6 @@ pm_pre_sched_cache = PatternMatcher([
   (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR), UPat(Ops.CONST)), name="b"), strip_bind),
 ])
 
-def replace_input_buffer_back(ctx:dict[UOp, UOp], b:UOp):
-  if (ret:=ctx.get(b, None)) is None:
-    assert b.op is Ops.BUFFER
-    # if it's not in the cache, create a new buffer
-    ctx[b] = ret = UOp.new_buffer(b.device, b.arg, b.dtype)
-  return ret
-
-pm_post_sched_cache = PatternMatcher([
-  (UPat(Ops.BUFFER, src=(UPat(Ops.LUNIQUE), UPat(Ops.DEVICE)), name="b"), replace_input_buffer_back),
-  (UPat(Ops.CONST, src=(UPat(Ops.DEVICE), UPat(Ops.LUNIQUE)), name="b"), replace_input_buffer_back),
-  # restore BIND value stripped in pm_pre_sched_cache
-  (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR),), name="b"), lambda ctx,b: ctx.get(b)),
-])
-
 schedule_cache: dict[bytes, tuple[list[ExecItem], UOp]] = {}
 def create_pre_schedule(big_sink: UOp, big_sink_cache: UOp) -> tuple[list[ExecItem], UOp, bool]:
   if not SCACHE or (sc_ret:=schedule_cache.get(big_sink_cache.key, None)) is None:
@@ -164,6 +150,20 @@ def create_pre_schedule(big_sink: UOp, big_sink_cache: UOp) -> tuple[list[ExecIt
     # schedule cache hit
     del big_sink_cache
     return *sc_ret, True
+
+def replace_input_buffer_back(ctx:dict[UOp, UOp], b:UOp):
+  if (ret:=ctx.get(b, None)) is None:
+    assert b.op is Ops.BUFFER
+    # if it's not in the cache, create a new buffer
+    ctx[b] = ret = UOp.new_buffer(b.device, b.arg, b.dtype)
+  return ret
+
+pm_post_sched_cache = PatternMatcher([
+  (UPat(Ops.BUFFER, src=(UPat(Ops.LUNIQUE), UPat(Ops.DEVICE)), name="b"), replace_input_buffer_back),
+  (UPat(Ops.CONST, src=(UPat(Ops.DEVICE), UPat(Ops.LUNIQUE)), name="b"), replace_input_buffer_back),
+  # restore BIND value stripped in pm_pre_sched_cache
+  (UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR),), name="b"), lambda ctx,b: ctx.get(b)),
+])
 
 @track_rewrites(lambda _,ret: f"Schedule {pluralize('Kernel', len(ret[1]))}")
 def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[dict[UOp, UOp], list[ExecItem], dict[str, int]]:
