@@ -148,5 +148,160 @@ class TestCallRematerialize(TestCall):
   def tearDown(self):
     Tensor.call = self.og_fn
 
+class TestCallRematerialize(TestCall):
+  def setUp(self):
+    self.og_fn = Tensor.call
+    def new_call(t, *lst:Tensor, fxn:Tensor|UOp, grad_fxn:Callable|None=None) -> Tensor:
+      return self.og_fn(t, *lst, fxn=fxn, grad_fxn=grad_fxn, rematerialize=True)
+    Tensor.call = new_call
+  def tearDown(self):
+    Tensor.call = self.og_fn
+
+# **** consumer patterns ****
+
+def create_sidebyside_n_consumers(kernel: Tensor, num_consumers: int) -> Tensor:
+  consumers = [kernel * (i+2) for i in range(num_consumers)]
+  return sum(consumers)
+
+def create_waterfall_n_consumers(kernel: Tensor, accum: Tensor, num_consumers: int) -> Tensor:
+  for _ in range(num_consumers):
+    accum = accum * kernel
+  return accum
+
+def create_diamond_n_consumers(kernel: Tensor, num_consumers: int) -> Tensor:
+  branches = [kernel * (i+2) for i in range(num_consumers)]
+  result = branches[0]
+  for b in branches[1:]:
+    result = result * b
+  return result
+
+def create_reduction_n_consumers(kernel: Tensor, num_consumers: int) -> Tensor:
+  consumers = [kernel * (j+2) for j in range(num_consumers)]
+  return sum(consumers).sum()
+
+def _call_remat_get_num_exec_items(get_args_and_fxn, post_processing_func, post_processing_args, remat, grad_fxn=None):
+  args, fxn = get_args_and_fxn()
+  kern = args[0].call(*args[1:], fxn=fxn, grad_fxn=grad_fxn, rematerialize=remat)
+  out = post_processing_func(kern, *post_processing_args)
+  return len(out.schedule())
+
+# **** arg factories ****
+
+def get_call_plus_args():
+  a = Tensor.ones(10, 10).contiguous()
+  b = Tensor.ones(10, 10).contiguous()
+  fxn = UOp.param(0, dtypes.float, (10, 10)) + UOp.param(1, dtypes.float, (10, 10))
+  return (a, b), fxn
+
+def get_call_complex_args():
+  a = Tensor.ones(10, 10).contiguous()
+  b = Tensor.full((10, 10), 3.).contiguous()
+  p0, p1 = UOp.param(0, dtypes.float, (10, 10)), UOp.param(1, dtypes.float, (10, 10))
+  fxn = (p0 * p1 + p0).exp2() * p1.reciprocal()
+  return (a, b), fxn
+
+def get_call_plus_sharded_args():
+  devs = ("CPU:0", "CPU:1")
+  a = Tensor.ones(10, 10).contiguous().shard(devs, axis=0)
+  b = Tensor.ones(10, 10).contiguous().shard(devs, axis=0)
+  fxn = a.as_param(0) + b.as_param(1)
+  return (a, b), fxn
+
+# **** schedule tests ****
+
+class TestCallRematerializeSchedule(unittest.TestCase):
+  # NOTE: unlike custom_kernel (which is always a separate schedule item), Tensor.call can fuse into consumers.
+  # so we test remat-to-remat deltas: each additional consumer should add exactly 1 remat item (2 for sharded).
+
+  # **** plus ****
+  def test_plus_side_by_side(self):
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_sidebyside_n_consumers, (i,), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  def test_plus_waterfall(self):
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_waterfall_n_consumers, (Tensor.ones(10, 10).contiguous(), i), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  def test_plus_self_reference(self):
+    args_reg, fxn_reg = get_call_plus_args()
+    kern_reg = args_reg[0].call(*args_reg[1:], fxn=fxn_reg)
+    args_remat, fxn_remat = get_call_plus_args()
+    kern_remat = args_remat[0].call(*args_remat[1:], fxn=fxn_remat, rematerialize=True)
+    self.assertGreater(len((kern_remat * kern_remat).schedule()), len((kern_reg * kern_reg).schedule()))
+
+  def test_plus_diamond(self):
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_diamond_n_consumers, (i,), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  def test_plus_reduction(self):
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_reduction_n_consumers, (i,), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  # **** plus backward (explicit grad_fxn) ****
+  def test_plus_backward_side_by_side(self):
+    grad_fxn = lambda grad, call: (grad, grad)
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_sidebyside_n_consumers, (i,), True, grad_fxn=grad_fxn) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  def test_plus_backward_waterfall(self):
+    grad_fxn = lambda grad, call: (grad, grad)
+    counts = [_call_remat_get_num_exec_items(get_call_plus_args, create_waterfall_n_consumers, (Tensor.ones(10, 10).contiguous(), i), True, grad_fxn=grad_fxn) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  # **** complex ****
+  def test_complex_side_by_side(self):
+    counts = [_call_remat_get_num_exec_items(get_call_complex_args, create_sidebyside_n_consumers, (i,), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  def test_complex_waterfall(self):
+    counts = [_call_remat_get_num_exec_items(get_call_complex_args, create_waterfall_n_consumers, (Tensor.ones(10, 10).contiguous(), i), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 1, msg=f"delta at {i+1} consumers")
+
+  # **** plus sharded ****
+  def test_plus_sharded_side_by_side(self):
+    counts = [_call_remat_get_num_exec_items(get_call_plus_sharded_args, create_sidebyside_n_consumers, (i,), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 2, msg=f"delta at {i+1} consumers")
+
+  def test_plus_sharded_waterfall(self):
+    devs = ("CPU:0", "CPU:1")
+    counts = [_call_remat_get_num_exec_items(get_call_plus_sharded_args, create_waterfall_n_consumers,
+      (Tensor.ones(10, 10).contiguous().shard(devs, axis=0), i), True) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertEqual(counts[i] - counts[i-1], 2, msg=f"delta at {i+1} consumers")
+
+  # **** special patterns ****
+  def test_chained_remat(self):
+    def get_remat_count(i):
+      a, b = Tensor.ones(10, 10).contiguous(), Tensor.ones(10, 10).contiguous()
+      fxn = UOp.param(0, dtypes.float, (10, 10)) + UOp.param(1, dtypes.float, (10, 10))
+      c1 = a.call(b, fxn=fxn, rematerialize=True)
+      c2 = c1.call(b, fxn=fxn, rematerialize=True)
+      return len(create_sidebyside_n_consumers(c2, i).schedule())
+    counts = [get_remat_count(i) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertGreater(counts[i], counts[i-1], msg=f"should grow at {i+1} consumers")
+
+  def test_mixed_remat_nonremat(self):
+    def get_remat_count(i):
+      a, b = Tensor.ones(10, 10).contiguous(), Tensor.ones(10, 10).contiguous()
+      fxn = UOp.param(0, dtypes.float, (10, 10)) + UOp.param(1, dtypes.float, (10, 10))
+      c1 = a.call(b, fxn=fxn, rematerialize=True)
+      c2 = a.call(b, fxn=fxn, rematerialize=False)
+      r1 = create_sidebyside_n_consumers(c1, i)
+      r2 = create_sidebyside_n_consumers(c2, i)
+      return len((r1 + r2).sum().schedule())
+    counts = [get_remat_count(i) for i in range(1, 5)]
+    for i in range(1, len(counts)):
+      self.assertGreater(counts[i], counts[i-1], msg=f"should grow at {i+1} consumers")
+
 if __name__ == '__main__':
   unittest.main()

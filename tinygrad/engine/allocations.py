@@ -100,7 +100,7 @@ def contiguous_mops_to_view(c:UOp):
 
 
 def transform_precompiled_call(c:UOp) -> UOp|None:
-  if not c.arg.precompile: return None
+  if not c.arg.precompile and not c.arg.rematerialize: return None
   if c.src[0].op is Ops.SINK: return None
   out = _buffer_like(c)
   fxn = out.param_like(len(c.src)-1).assign(c.src[0]).sink()

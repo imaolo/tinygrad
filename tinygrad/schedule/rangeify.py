@@ -496,9 +496,7 @@ def do_remat(tsink: UOp) -> UOp:
   # record after consumers and the after's position in the source list
   after_consumers_pos: dict[UOp, list[tuple[UOp, int]]] = {}
   for n in tsink.toposort():
-    # these are not "real consumers"
-    # TODO: is this correct? what happens if the multi/sink is legitimately consumed
-    if n.op in {Ops.SINK, Ops.MULTI} | GroupOp.Movement: continue
+    if n.src and n.base is not n: continue
 
     for i, s in enumerate(n.src):
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
@@ -520,8 +518,7 @@ def do_remat(tsink: UOp) -> UOp:
 
 @profile_matches
 def get_kernel_graph(sink:UOp) -> UOp:
-  tsink = do_remat(sink)
-  tsink = graph_rewrite(tsink, multi_pm, name="multi_pm")
+  tsink = graph_rewrite(do_remat(sink), multi_pm, name="multi_pm")
   tsink = graph_rewrite(tsink, pm_syntactic_sugar+pm_mops+earliest_rewrites, bottom_up=True, name="earliest rewrites")
 
   # convert movement ops to ranges
