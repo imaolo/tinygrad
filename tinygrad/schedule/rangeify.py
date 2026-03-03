@@ -77,12 +77,14 @@ mop_cleanup = PatternMatcher([
 ])
 
 pm_gather_params = PatternMatcher([ (UPat(Ops.PARAM, name="p"), lambda ctx, p: ctx.append(p)), ])
-def resolve_call(c:UOp, allow_param_mismatch=True) -> UOp|None:
-  if not should_resolve_call(c): return None
+def get_call_params(c: UOp) -> list[UOp]:
   params: list[UOp] = []
   graph_rewrite(c.src[0], pm_gather_params, bottom_up=True, ctx=params, name="gather params")
-  params = sorted(params, key=lambda x: x.arg)
-  args = c.src[1:]
+  return sorted(params, key=lambda x: x.arg)
+
+def resolve_call(c:UOp, allow_param_mismatch=True) -> UOp|None:
+  if not should_resolve_call(c): return None
+  params, args = get_call_params(c), c.src[1:]
 
   # NOTE: this isn't really needed. it's okay if there's unused args in the function
   if not allow_param_mismatch:

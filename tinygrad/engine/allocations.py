@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from tinygrad.uop.ops import UOp, UPat, PatternMatcher, Ops, GroupOp, graph_rewrite, identity_element, track_rewrites
+from tinygrad.schedule.rangeify import get_call_params
 from tinygrad.dtype import dtypes, ImageDType
-from tinygrad.helpers import prod, DEBUG, argsort, VIZ, pluralize, FLOAT16
+from tinygrad.helpers import prod, DEBUG, argsort, VIZ, pluralize, FLOAT16, all_same
 
 @dataclass
 class AllocCtx:
@@ -102,6 +103,9 @@ def contiguous_mops_to_view(c:UOp):
 def transform_precompiled_call(c:UOp) -> UOp|None:
   if not c.arg.precompile and not c.arg.rematerialize: return None
   if c.src[0].op is Ops.SINK: return None
+  assert all_same([arg.device for arg in c.src[1:]])
+  device_param_sub = {param: param.replace_src_at(1, UOp(Ops.DEVICE, arg=c.src[1].device)) for param in get_call_params(c) if c.src[1].op is not Ops.DEVICE}
+  c = c.replace_src_at(0, c.src[0].substitute(device_param_sub, walk=True))
   out = _buffer_like(c)
   fxn = out.param_like(len(c.src)-1).assign(c.src[0]).sink()
   return out.after(c.replace(src=(fxn,)+tuple(x.contiguous() if x.op is not Ops.AFTER else x for x in c.src[1:])+(out,), dtype=dtypes.void, tag=None))
