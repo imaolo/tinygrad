@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+from typing import Callable
 from tinygrad import Tensor, function
 from tinygrad.dtype import dtypes
 from tinygrad.uop.ops import UOp
@@ -137,6 +138,15 @@ class TestCallSchedule(unittest.TestCase):
     out = gemm(a,b,c)
     (out-ref).square().mean().backward()
     out.realize(a.grad, b.grad, c.grad)
+
+class TestCallRematerialize(TestCall):
+  def setUp(self):
+    self.og_fn = Tensor.call
+    def new_call(t, *lst:Tensor, fxn:Tensor|UOp, grad_fxn:Callable|None=None) -> Tensor:
+      return self.og_fn(t, *lst, fxn=fxn, grad_fxn=grad_fxn, rematerialize=True)
+    Tensor.call = new_call
+  def tearDown(self):
+    Tensor.call = self.og_fn
 
 if __name__ == '__main__':
   unittest.main()

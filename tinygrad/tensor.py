@@ -238,16 +238,16 @@ class Tensor(OpMixin):
     else:
       param = UOp.param(slot, self.dtype, self.shape, self.device)
     return Tensor(param, device=self.device)
-  def call(self, *lst:Tensor, fxn:Tensor|UOp, grad_fxn:Callable|None=None) -> Tensor:
-    return Tensor((fxn.uop if isinstance(fxn, Tensor) else fxn).call(*[t.uop for t in (self,)+lst], grad_fxn=grad_fxn), device=self.device)
+  def call(self, *lst:Tensor, fxn:Tensor|UOp, grad_fxn:Callable|None=None, rematerialize:bool=False) -> Tensor:
+    return Tensor((fxn.uop if isinstance(fxn, Tensor) else fxn).call(*[t.uop for t in (self,)+lst], grad_fxn=grad_fxn, rematerialize=rematerialize), device=self.device)
 
-  def custom_kernel(self, *lst:Tensor, fxn:Callable, grad_fxn:Callable|None=None) -> list[Tensor]:
+  def custom_kernel(self, *lst:Tensor, fxn:Callable, grad_fxn:Callable|None=None, rematerialize:bool=False) -> list[Tensor]:
     """
     Call into a custom kernel written in UOps. Returns the Tensors after the Kernel has been applied.
 
     This API is alpha and may change.
     """
-    return [Tensor(u, device=u.device) for u in UOp.custom_kernel(*[t.uop for t in (self,)+lst], fxn=fxn, grad_fxn=grad_fxn)]
+    return [Tensor(u, device=u.device) for u in UOp.custom_kernel(*[t.uop for t in (self,)+lst], fxn=fxn, grad_fxn=grad_fxn, rematerialize=rematerialize)]
 
   def callify(self, *lst:Tensor) -> Tensor:
     big_sink = UOp.sink(*[x.uop for x in (self,)+lst])

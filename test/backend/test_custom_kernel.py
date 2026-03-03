@@ -1,4 +1,5 @@
 import unittest
+from typing import Callable
 from tinygrad import Tensor, UOp
 from tinygrad.dtype import AddrSpace
 from tinygrad.uop.ops import KernelInfo, AxisType
@@ -282,6 +283,15 @@ class TestCustomKernel(unittest.TestCase):
 
     self.assertIsNotNone(custom_idx, "custom_addmul kernel not found in schedule")
     self.assertEqual(custom_idx, 3, f"custom_addmul should be at index 3, got {custom_idx}")
+
+class TestCustomKernelRematerializeCorrectness(TestCustomKernel):
+  def setUp(self):
+    self.og_fn = Tensor.custom_kernel
+    def new_custom_kernel(t, *lst:Tensor, fxn:Callable, grad_fxn:Callable|None=None) -> list[Tensor]:
+      return self.og_fn(t, *lst, fxn=fxn, grad_fxn=grad_fxn, rematerialize=True)
+    Tensor.custom_kernel = new_custom_kernel
+  def tearDown(self):
+    Tensor.custom_kernel = self.og_fn
 
 if __name__ == '__main__':
   unittest.main()
