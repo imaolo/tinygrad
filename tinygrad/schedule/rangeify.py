@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field, replace
+from typing import cast
 import itertools
 from tinygrad.dtype import dtypes, PtrDType, ImageDType, AddrSpace, Invalid
-from tinygrad.uop.ops import PatternMatcher, UPat, Ops, UOp, resolve, GroupOp, _substitute, KernelInfo
+from tinygrad.uop.ops import PatternMatcher, UPat, Ops, UOp, resolve, GroupOp, _substitute, KernelInfo, CallInfo
 from tinygrad.uop.ops import graph_rewrite, sint, AxisType, BottomUpGate, profile_matches, should_resolve_call
 from tinygrad.uop.symbolic import symbolic
 from tinygrad.helpers import prod, all_same, getenv, dedup, all_int, DEBUG, SPLIT_REDUCEOP, DEBUG_RANGEIFY, VIZ, MAX_KERNEL_BUFFERS
@@ -491,9 +492,36 @@ split_kernels = PatternMatcher([
   (UPat((Ops.STORE, Ops.END), name="x"), split_store),
 ])
 
+def do_remat(tsink: UOp) -> UOp:
+  # record after consumers and the after's position in the source list
+  after_consumers_pos: dict[UOp, list[tuple[UOp, int]]] = {}
+  for n in tsink.toposort():
+    # these are not "real consumers"
+    # TODO: is this correct? what happens if the multi/sink is legitimately consumed
+    if n.op in {Ops.SINK, Ops.MULTI} | GroupOp.Movement: continue
+
+    for i, s in enumerate(n.src):
+      if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
+        after_consumers_pos.setdefault(s, []).append((n, i))
+
+  # replace >1
+  lunique_iter: itertools.count[int] = itertools.count(max([-1]+[x.arg for x in tsink.toposort() if x.op is Ops.LUNIQUE]) + 1)
+  remat_rep: dict[UOp, UOp] = {}
+  for after_chain, consumers_pos in after_consumers_pos.items():
+    if len(consumers_pos) <= 1: continue
+
+    old_buf = after_chain.base.src[0]
+    for consumer, idx in consumers_pos[1:]:
+      new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
+      remat_rep[consumer] = remat_rep.get(consumer, consumer).replace_src_at(idx, after_chain.substitute({old_buf: new_buf.reshape(old_buf.shape)}))
+
+  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
+  return tsink
+
 @profile_matches
 def get_kernel_graph(sink:UOp) -> UOp:
-  tsink = graph_rewrite(sink, multi_pm, name="multi_pm")
+  tsink = do_remat(sink)
+  tsink = graph_rewrite(tsink, multi_pm, name="multi_pm")
   tsink = graph_rewrite(tsink, pm_syntactic_sugar+pm_mops+earliest_rewrites, bottom_up=True, name="earliest rewrites")
 
   # convert movement ops to ranges
