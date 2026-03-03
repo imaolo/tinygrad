@@ -331,13 +331,14 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat, msg=i)
+      self.assertEqual(num_reg+i, num_remat, msg=i)
 
   def test_simple_waterfall_consumers(self):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_self_reference(self):
     kern_reg = Tensor.custom_kernel(*get_fxn_args(), fxn=custom_elementwise_add_kernel)[0]
@@ -346,21 +347,21 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     out_reg = kern_reg * kern_reg
     out_remat = kern_remat * kern_remat
 
-    self.assertEqual(len(out_reg.schedule())+1, len(out_remat.schedule()))
+    self.assertEqual(len(out_reg.schedule())+2, len(out_remat.schedule()))
 
   def test_simple_sharded_side_by_side_consumers(self):
     devs = ("CPU:0", "CPU:1")
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args_sharded, custom_elementwise_add_kernel, create_sidebyside_n_consumers, (i,), False, (devs,))
       num_remat = _remat_get_num_exec_items(get_fxn_args_sharded, custom_elementwise_add_kernel, create_sidebyside_n_consumers, (i,), True, (devs,))
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_simple_sharded_waterfall_consumers(self):
     devs = ("CPU:0", "CPU:1")
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args_sharded, custom_elementwise_add_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous().shard(devs, axis=0),i), False, (devs,))
       num_remat = _remat_get_num_exec_items(get_fxn_args_sharded, custom_elementwise_add_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous().shard(devs, axis=0),i), True, (devs,))
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_sharded_add_one_side_by_side(self):
     # PYTHON backend explicitly checks for OOB access for wrong multi shape regression
@@ -370,7 +371,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_sharded_add_one_waterfall(self):
     # PYTHON backend explicitly checks for OOB access for wrong multi shape regression
@@ -380,7 +381,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_waterfall_n_consumers, (Tensor.ones(4, 4).contiguous().shard(devs, axis=0), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_waterfall_n_consumers, (Tensor.ones(4, 4).contiguous().shard(devs, axis=0), i), True)
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_arange_side_by_side(self):
     def get_args():
@@ -388,7 +389,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_arange_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_arange_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_arange_waterfall(self):
     def get_args():
@@ -396,7 +397,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_arange_kernel, create_waterfall_n_consumers, (Tensor.ones(100).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_arange_kernel, create_waterfall_n_consumers, (Tensor.ones(100).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_eye_side_by_side(self):
     def get_args():
@@ -404,7 +405,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_eye_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_eye_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_eye_waterfall(self):
     def get_args():
@@ -412,7 +413,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_eye_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_eye_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_flip_contract_side_by_side(self):
     def get_args():
@@ -420,7 +421,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, flip_contract_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, flip_contract_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_flip_contract_waterfall(self):
     def get_args():
@@ -428,7 +429,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, flip_contract_kernel, create_waterfall_n_consumers, (Tensor.ones(10, 4).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, flip_contract_kernel, create_waterfall_n_consumers, (Tensor.ones(10, 4).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_noncontig_side_by_side(self):
     def get_args():
@@ -437,7 +438,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_noncontig_waterfall(self):
     def get_args():
@@ -446,7 +447,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_add_one_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_sum_side_by_side(self):
     def get_args():
@@ -454,7 +455,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_sum, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_sum, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_sum_waterfall(self):
     def get_args():
@@ -462,7 +463,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_sum, create_waterfall_n_consumers, (Tensor.ones(1).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_sum, create_waterfall_n_consumers, (Tensor.ones(1).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_sum_int_side_by_side(self):
     def get_args():
@@ -471,7 +472,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_sum, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_sum, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_slice_sum_side_by_side(self):
     def get_args():
@@ -479,7 +480,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, slice_sum_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, slice_sum_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_slice_sum_waterfall(self):
     def get_args():
@@ -487,7 +488,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, slice_sum_kernel, create_waterfall_n_consumers, (Tensor.ones(16).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, slice_sum_kernel, create_waterfall_n_consumers, (Tensor.ones(16).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_side_by_side(self):
     N = 16
@@ -496,7 +497,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_waterfall(self):
     N = 16
@@ -505,7 +506,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_multi_side_by_side(self):
     devs = ("CPU:0", "CPU:1")
@@ -515,7 +516,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_simple_qkv_side_by_side(self):
     N, d = 8, 4
@@ -525,7 +526,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, fxn, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, fxn, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_simple_qkv_waterfall(self):
     N, d = 8, 4
@@ -535,7 +536,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, fxn, create_waterfall_n_consumers, (Tensor.ones(N, d).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, fxn, create_waterfall_n_consumers, (Tensor.ones(N, d).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_sum_int_waterfall(self):
     def get_args():
@@ -544,7 +545,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_sum, create_waterfall_n_consumers, (Tensor([1]).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_sum, create_waterfall_n_consumers, (Tensor([1]).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_multi_waterfall(self):
     devs = ("CPU:0", "CPU:1")
@@ -554,7 +555,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous().shard(devs, axis=0), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous().shard(devs, axis=0), i), True)
-      self.assertEqual(num_reg+(2*(i-1)), num_remat, msg=i)
+      self.assertEqual(num_reg+(2*i), num_remat, msg=i)
 
   def test_empty_side_by_side(self):
     def get_args():
@@ -563,7 +564,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, fxn, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, fxn, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_empty_waterfall(self):
     def get_args():
@@ -572,7 +573,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, fxn, create_waterfall_n_consumers, (Tensor.ones(1).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, fxn, create_waterfall_n_consumers, (Tensor.ones(1).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_multioutput_side_by_side(self):
     def get_args():
@@ -580,7 +581,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_elementwise_addmul_kernel, create_sidebyside_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_elementwise_addmul_kernel, create_sidebyside_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_multioutput_waterfall(self):
     def get_args():
@@ -588,7 +589,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_elementwise_addmul_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), False)
       num_remat = _remat_get_num_exec_items(get_args, custom_elementwise_addmul_kernel, create_waterfall_n_consumers, (Tensor.ones(16, 16).contiguous(), i), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_backward_side_by_side(self):
     N = 4
@@ -597,7 +598,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), False, grad_fxn=backward_gemm)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), True, grad_fxn=backward_gemm)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_backward_waterfall(self):
     N = 4
@@ -606,7 +607,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), False, grad_fxn=backward_gemm)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), True, grad_fxn=backward_gemm)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_backward_custom_side_by_side(self):
     N = 4
@@ -615,7 +616,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), False, grad_fxn=backward_gemm_custom)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_sidebyside_n_consumers, (i,), True, grad_fxn=backward_gemm_custom)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_gemm_backward_custom_waterfall(self):
     N = 4
@@ -624,7 +625,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), False, grad_fxn=backward_gemm_custom)
       num_remat = _remat_get_num_exec_items(get_args, custom_gemm, create_waterfall_n_consumers, (Tensor.ones(N, N).contiguous(), i), True, grad_fxn=backward_gemm_custom)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_multi_after_schedule_order_side_by_side(self):
     for i in range(1, 5):
@@ -640,7 +641,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
         return len(result.schedule())
       num_reg = get_count(False)
       num_remat = get_count(True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i+1, num_remat)
 
   def test_multi_after_schedule_order_waterfall(self):
     for i in range(1, 5):
@@ -656,13 +657,13 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
         return len(result.schedule())
       num_reg = get_count(False)
       num_remat = get_count(True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i+1, num_remat)
 
   def test_diamond(self):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_diamond_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_diamond_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
   def test_multioutput_both_consumers(self):
     for i in range(1, 5):
@@ -677,8 +678,8 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
       num_reg = get_count(False)
       num_remat = get_count(True)
       # both outputs share the same kernel, each with i consumers
-      # each output's AFTER is rematerialized independently: 2*(i-1) extra kernels
-      self.assertEqual(num_reg + 2*(i-1), num_remat)
+      # each output's AFTER is rematerialized independently: 2*i extra kernels
+      self.assertEqual(num_reg + 2*i, num_remat)
 
   def test_chained_remat(self):
     for i in range(1, 5):
@@ -690,7 +691,7 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
       num_reg = get_count(False)
       num_remat = get_count(True)
       # only c2 has multiple consumers, c1 has 1 consumer (c2's input)
-      self.assertEqual(num_reg + (i-1), num_remat)
+      self.assertEqual(num_reg + i + 1, num_remat)
 
   def test_mixed_remat_nonremat(self):
     for i in range(1, 5):
@@ -704,13 +705,13 @@ class TestCustomKernelRematerializeSchedule(unittest.TestCase):
       num_none = get_count(False)
       num_mixed = get_count(True)
       # only c1 (remat) adds extra kernels, c2 (non-remat) stays shared
-      self.assertEqual(num_none + (i-1), num_mixed)
+      self.assertEqual(num_none + i, num_mixed)
 
   def test_reduction_consumer(self):
     for i in range(1, 5):
       num_reg = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_reduction_n_consumers, (i,), False)
       num_remat = _remat_get_num_exec_items(get_fxn_args, custom_elementwise_add_kernel, create_reduction_n_consumers, (i,), True)
-      self.assertEqual(num_reg+(i-1), num_remat)
+      self.assertEqual(num_reg+i, num_remat)
 
 if __name__ == '__main__':
   unittest.main()
