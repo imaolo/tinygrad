@@ -148,15 +148,6 @@ class TestCallRematerialize(TestCall):
   def tearDown(self):
     Tensor.call = self.og_fn
 
-class TestCallRematerialize(TestCall):
-  def setUp(self):
-    self.og_fn = Tensor.call
-    def new_call(t, *lst:Tensor, fxn:Tensor|UOp, grad_fxn:Callable|None=None) -> Tensor:
-      return self.og_fn(t, *lst, fxn=fxn, grad_fxn=grad_fxn, rematerialize=True)
-    Tensor.call = new_call
-  def tearDown(self):
-    Tensor.call = self.og_fn
-
 # **** consumer patterns ****
 
 def create_sidebyside_n_consumers(kernel: Tensor, num_consumers: int) -> Tensor:
