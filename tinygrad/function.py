@@ -17,9 +17,10 @@ pm_ctx = PatternMatcher([
 
 ReturnType = TypeVar('ReturnType')
 class _function(Generic[ReturnType]):
-  def __init__(self, fxn:Callable[..., ReturnType], *, precompile:bool=False):
+  def __init__(self, fxn:Callable[..., ReturnType], *, precompile:bool=False, rematerialize:bool=False):
     self.fxn = fxn
     self.precompile = precompile
+    self.rematerialize = rematerialize
 
   def __get__(self, obj, objtype=None): return functools.partial(self.__call__, obj) if obj is not None else self
 
@@ -58,7 +59,7 @@ class _function(Generic[ReturnType]):
     #call = assigned.call(*call_uops, buffer, name=name)
     #ret = buffer.after(call)
 
-    ret = uret.call(*call_uops, name=name, precompile=self.precompile)
+    ret = uret.call(*call_uops, name=name, precompile=self.precompile, rematerialize=self.rematerialize)
     return cast(ReturnType, Tensor(ret, device=ret.device))
 
 # overload signatures support both @function and @function(precompile=True) syntax
@@ -66,6 +67,7 @@ class _function(Generic[ReturnType]):
 def function(fxn:Callable[..., ReturnType], *, precompile:bool=False) -> _function[ReturnType]: ...
 @overload
 def function(fxn:None=None, *, precompile:bool=False) -> Callable[[Callable[..., ReturnType]], _function[ReturnType]]: ...
-def function(fxn=None, *, precompile:bool=False):
-  if fxn is None: return lambda f: _function(f, precompile=precompile)
-  return _function(fxn, precompile=precompile)
+def function(fxn=None, *, precompile:bool=False, rematerialize:bool=False):
+  if fxn is None: return lambda f: _function(f, precompile=precompile, rematerialize=rematerialize)
+  return _function(fxn, precompile=precompile, rematerialize=rematerialize)
+
