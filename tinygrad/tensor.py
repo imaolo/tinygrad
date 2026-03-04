@@ -445,7 +445,6 @@ class Tensor(OpMixin):
     if isinstance(y.device, str): return self.to(y.device)
     return self if isinstance(self.device, tuple) and (y.device, y.uop.axis) == (self.device, self.uop.axis) else self.shard(y.device, y.uop.axis)
 
-
   def allgather(self) -> Tensor:
     return Tensor(self.uop.copy_to_device(self.device), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
 
