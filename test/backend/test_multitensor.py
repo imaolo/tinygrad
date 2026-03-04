@@ -33,6 +33,18 @@ def _test_allreduce(t:Tensor):
   b.realize()
   return aa, b
 
+# tensor coming in is completely sharded
+# we can allgather, and then add each "chunk" to get the final chunk.
+# this should be the same as the allreduce
+def _test_allgather(t: Tensor):
+  t_sharded = t.shard(devices_4, 0).realize()
+  t_replicated = t.shard(devices_4).realize()
+
+  t_ag = t_sharded.allgather() 
+
+  t_ar = (Tensor(UOp.allreduce(t_replicated.uop, Ops.ADD, t_replicated.device)))/4
+  return t_ag.realize(), t_ar.realize()
+
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestMultiTensor(unittest.TestCase):
   @needs_second_gpu
@@ -226,6 +238,11 @@ class TestMultiTensor(unittest.TestCase):
   def test_allreduce_ring(self):
     with Context(RING=2):
       a,b = _test_allreduce(Tensor.rand(256, 256))
+      np.testing.assert_almost_equal(a.numpy(), b.numpy(), decimal=5)
+
+  def test_allgather(self):
+    with Context(RING=2):
+      a,b = _test_allgather(Tensor.rand(256, 256).realize())
       np.testing.assert_almost_equal(a.numpy(), b.numpy(), decimal=5)
 
   def test_multiple_to_single_device(self):
