@@ -44,6 +44,22 @@ def create_schedule(sched_sink:UOp) -> UOp:
           case _:
             raise RuntimeError(f"input to kernel must be AFTER, BUFFER, PARAM, MSELECT, MSTACK, or BIND, not {s.op}")
 
+    # defer rematerializable CALLs until their consumers' other deps are met (FSDP allgather interleaving)
+    # this ensures allgather runs right before the consumer needs it, not all upfront
+    remat_calls = {k for k in in_degree if k.op is Ops.CALL and k.arg.rematerialize}
+    # build reverse map: consumer -> list of its producer dependencies
+    parents: dict[UOp, list[UOp]] = {}
+    for p, cs in children.items():
+      for c in cs:
+        parents.setdefault(c, []).append(p)
+    # make each remat CALL depend on its consumer's other parents
+    for rc in remat_calls:
+      for consumer in children.get(rc, []):
+        for other_parent in parents.get(consumer, []):
+          if other_parent not in remat_calls:
+            children.setdefault(other_parent, []).append(rc)
+            in_degree[rc] += 1
+
   with cpu_profile(TracingKey("linearize schedule")):
     queue: deque[UOp] = deque(k for k,v in in_degree.items() if v == 0)
     linearized: list[UOp] = []

@@ -511,9 +511,15 @@ def do_remat(tsink: UOp) -> UOp:
     if len(consumers_pos) <= 1: continue
 
     old_buf = after_chain.base.src[0]
+    old_call = after_chain.base.src[1]
     for consumer, idx in consumers_pos[1:]:
       new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
-      remat_rep[consumer] = remat_rep.get(consumer, consumer).replace_src_at(idx, after_chain.substitute({old_buf: new_buf.reshape(old_buf.shape)}))
+      new_after = after_chain.substitute({old_buf: new_buf.reshape(old_buf.shape)})
+      # ensure rematerialized CALL retains rematerialize=True for scheduler chaining
+      new_call = new_after.base.src[1]
+      if new_call is old_call and not cast(CallInfo, new_call.arg).rematerialize:
+        new_after = new_after.substitute({new_call: new_call.replace(arg=replace(new_call.arg, rematerialize=True))})
+      remat_rep[consumer] = remat_rep.get(consumer, consumer).replace_src_at(idx, new_after)
 
   if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
   return tsink
