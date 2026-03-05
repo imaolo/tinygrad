@@ -1,0 +1,280 @@
+import unittest, functools
+from collections import defaultdict
+from tinygrad import Tensor, Device, function
+from tinygrad.nn import Linear, optim, state
+from tinygrad.helpers import ProfilePointEvent, ProfileEvent, Context, CI
+from tinygrad.device import Buffer
+from typing import Callable
+
+def not_support_multi_device():
+  return CI and Device.DEFAULT in ("CL", "CUDA")
+
+def needs_multi_gpu(fn):
+  @functools.wraps(fn)
+  def wrapper(self, *args, **kwargs):
+    try: Tensor.zeros(10, device=f"{Device.DEFAULT}:1").contiguous().realize()
+    except Exception as e: self.skipTest(f"multi device not available: {e}")
+    return fn(self, *args, **kwargs)
+  return wrapper
+
+# ---- helpers ----
+
+N_DEVICES = 4
+
+def _devices():
+  return tuple(f"{Device.DEFAULT}:{i}" for i in range(1, N_DEVICES + 1))
+
+@function(rematerialize=True)
+def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
+
+class _Model:
+  def __init__(self, in_dim: int, out_dim: int, n_dim: int, n_layers: int):
+    assert n_layers > 0
+    dims = [in_dim] + [n_dim] * (n_layers - 1) + [out_dim]
+    self.ws: list[Linear] = [Linear(i, o, bias=False) for i, o in zip(dims, dims[1:])]
+  def __call__(self, x: Tensor) -> Tensor: return x.sequential(self.ws)
+
+def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp):
+  """Returns (model, sharded_params_or_None)."""
+  model = _Model(in_dim, out_dim, n_dim, n_layers)
+  sharded_params = None
+  if use_fsdp:
+    sharded_params = []
+    for param in state.get_parameters(model):
+      sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
+      sharded_param.requires_grad_(True)
+      sharded_params.append(sharded_param)
+      ag = allgather_fxn(sharded_param)
+      param.replace(ag)
+      param.requires_grad_(True)
+  else:
+    for param in state.get_parameters(model):
+      param.to_(devices)
+  return model, sharded_params
+
+def _get_optimizer(model, sharded_params, lr=0.001):
+  if sharded_params is not None:
+    allgathered_params = list(state.get_parameters(model))
+    opt = optim.SGD(sharded_params, lr)
+    opt.setup_fsdp(allgathered_params)
+  else:
+    opt = optim.SGD(state.get_parameters(model), lr)
+  return opt
+
+def _make_dataset(dataset_size, batch_size, in_dim, devices):
+  X, Y = (X_:=Tensor.rand(dataset_size, in_dim).realize()), X_.sum(-1).unsqueeze(-1).realize()
+  num_batches = dataset_size // batch_size
+  X, Y = X.reshape(num_batches, batch_size, -1), Y.reshape(num_batches, batch_size, -1)
+  return X.shard(devices, 1), Y.shard(devices, 1)
+
+@Tensor.train()
+def _step(x, y, model, opt, loss_fn):
+  opt.zero_grad()
+  out = model(x)
+  loss = loss_fn(out, y)
+  loss.backward()
+  opt.step()
+  return loss.realize()
+
+def _loss_fn(pred: Tensor, true: Tensor) -> Tensor:
+  return ((pred - true) ** 2).mean()
+
+def _peak_memory(events: list[ProfileEvent], device: str) -> int:
+  """Return peak memory in bytes for a single device from profile events."""
+  allocs: dict[int, int] = {}
+  mem, peak = 0, 0
+  for e in events:
+    if not isinstance(e, ProfilePointEvent) or e.device != device: continue
+    if e.name == 'alloc':
+      sz = e.arg['sz'] * e.arg['dtype'].itemsize
+      allocs[e.key] = sz
+      mem += sz
+    elif e.name == 'free' and e.key in allocs:
+      mem -= allocs[e.key]
+      del allocs[e.key]
+    peak = max(peak, mem)
+  return peak
+
+def _buffers_at_peak(events: list[ProfileEvent], device: str) -> dict[int, int]:
+  """Return {size_bytes: count} of buffers alive at peak memory."""
+  allocs: dict[int, int] = {}
+  alive: dict[int, int] = {}  # key -> size
+  mem, peak, peak_alive = 0, 0, {}
+  for e in events:
+    if not isinstance(e, ProfilePointEvent) or e.device != device: continue
+    if e.name == 'alloc':
+      sz = e.arg['sz'] * e.arg['dtype'].itemsize
+      allocs[e.key] = sz
+      alive[e.key] = sz
+      mem += sz
+    elif e.name == 'free' and e.key in allocs:
+      mem -= allocs[e.key]
+      if e.key in alive: del alive[e.key]
+    if mem > peak:
+      peak = mem
+      peak_alive = dict(alive)
+  by_size: dict[int, int] = defaultdict(int)
+  for sz in peak_alive.values():
+    by_size[sz] += 1
+  return dict(by_size)
+
+# ---- tests ----
+
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDP(unittest.TestCase):
+  in_dim, out_dim, n_dim, n_layers = 2, 1, 256, 10
+
+  @needs_multi_gpu
+  def setUp(self):
+    Tensor.manual_seed(0)
+    self.devices = _devices()
+
+  def _param_bytes(self) -> int:
+    """Total param bytes for the model."""
+    dims = [self.in_dim] + [self.n_dim] * (self.n_layers - 1) + [self.out_dim]
+    return sum(i * o * 4 for i, o in zip(dims, dims[1:]))
+
+  def _theoretical_param_savings(self) -> int:
+    """Exact bytes saved by sharding params across N_DEVICES."""
+    return self._param_bytes() - self._param_bytes() // N_DEVICES
+
+  # -- convergence tests --
+
+  def test_fsdp_and_nonfsdp_same_initial_loss(self):
+    """Both modes should produce identical first loss (same seed, same data)."""
+    losses = {}
+    for use_fsdp in [False, True]:
+      Tensor.manual_seed(0)
+      model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+      opt = _get_optimizer(model, sharded)
+      X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+      x, y = X[0], Y[0]
+      loss = _step(x, y, model, opt, _loss_fn)
+      losses["fsdp" if use_fsdp else "nonfsdp"] = loss.item()
+    self.assertAlmostEqual(losses["fsdp"], losses["nonfsdp"], places=4,
+                           msg=f"initial loss mismatch: fsdp={losses['fsdp']}, nonfsdp={losses['nonfsdp']}")
+
+  def _train_n_steps(self, use_fsdp, n_steps=64, lr=0.001):
+    """Train for n steps on different batches, return list of losses."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, sharded, lr=lr)
+    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    losses = []
+    for i in range(n_steps):
+      loss = _step(X[i % len(X)], Y[i % len(Y)], model, opt, _loss_fn)
+      losses.append(loss.item())
+    return losses
+
+  def test_fsdp_converges(self):
+    """Average loss in last quarter should be lower than first quarter."""
+    losses = self._train_n_steps(use_fsdp=True)
+    q = len(losses) // 4
+    avg_first = sum(losses[:q]) / q
+    avg_last = sum(losses[-q:]) / q
+    self.assertLess(avg_last, avg_first,
+      f"FSDP not converging: first quarter avg={avg_first:.4f}, last quarter avg={avg_last:.4f}")
+
+  def test_fsdp_and_nonfsdp_similar_convergence(self):
+    """FSDP and non-FSDP should produce similar loss trajectories."""
+    losses_fsdp = self._train_n_steps(use_fsdp=True)
+    losses_nonfsdp = self._train_n_steps(use_fsdp=False)
+    # final losses should be within 2x of each other
+    self.assertAlmostEqual(losses_fsdp[-1], losses_nonfsdp[-1], delta=losses_nonfsdp[-1],
+      msg=f"final loss too different: fsdp={losses_fsdp[-1]:.4f}, nonfsdp={losses_nonfsdp[-1]:.4f}")
+
+  # -- memory tests --
+
+  def _profile_one_step(self, use_fsdp: bool) -> list[ProfileEvent]:
+    """Run one training step with profiling, return Buffer.profile_events."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, sharded)
+    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    x, y = X[0].realize(), Y[0].realize()
+    Buffer.profile_events.clear()
+    with Context(PROFILE=1):
+      _step(x, y, model, opt, _loss_fn)
+    return list(Buffer.profile_events)
+
+  def test_fsdp_lower_peak_memory(self):
+    """FSDP peak memory should be strictly less than non-FSDP on every device."""
+    events_nonfsdp = self._profile_one_step(use_fsdp=False)
+    events_fsdp = self._profile_one_step(use_fsdp=True)
+    for dev in self.devices:
+      peak_nonfsdp = _peak_memory(events_nonfsdp, dev)
+      peak_fsdp = _peak_memory(events_fsdp, dev)
+      self.assertLess(peak_fsdp, peak_nonfsdp,
+                      f"{dev}: FSDP peak {peak_fsdp} should be < non-FSDP peak {peak_nonfsdp}")
+
+  def test_fsdp_memory_savings_near_theoretical(self):
+    """FSDP savings should be at least 80% of theoretical param savings."""
+    events_nonfsdp = self._profile_one_step(use_fsdp=False)
+    events_fsdp = self._profile_one_step(use_fsdp=True)
+    theoretical = self._theoretical_param_savings()
+    dev = self.devices[0]
+    peak_nonfsdp = _peak_memory(events_nonfsdp, dev)
+    peak_fsdp = _peak_memory(events_fsdp, dev)
+    actual_savings = peak_nonfsdp - peak_fsdp
+    ratio = actual_savings / theoretical
+    self.assertGreaterEqual(ratio, 0.80,
+      f"savings {actual_savings} is only {ratio:.0%} of theoretical {theoretical} "
+      f"(fsdp={peak_fsdp}, nonfsdp={peak_nonfsdp})")
+
+  def test_fsdp_fewer_full_size_buffers_than_nonfsdp(self):
+    """FSDP should have strictly fewer full-size buffers at peak than non-FSDP.
+    This catches the regression where backward allgather outputs all pile up."""
+    events_fsdp = self._profile_one_step(use_fsdp=True)
+    events_nonfsdp = self._profile_one_step(use_fsdp=False)
+    dev = self.devices[0]
+    full_layer_bytes = self.n_dim * self.n_dim * 4
+    fsdp_full = _buffers_at_peak(events_fsdp, dev).get(full_layer_bytes, 0)
+    nonfsdp_full = _buffers_at_peak(events_nonfsdp, dev).get(full_layer_bytes, 0)
+    self.assertLess(fsdp_full, nonfsdp_full,
+      f"FSDP has {fsdp_full} full-size buffers at peak, non-FSDP has {nonfsdp_full}. "
+      f"FSDP should have fewer.")
+
+  def test_fsdp_sharded_params_present_at_peak(self):
+    """At FSDP peak, sharded param buffers should be present (they're always alive)."""
+    events = self._profile_one_step(use_fsdp=True)
+    dev = self.devices[0]
+    bufs = _buffers_at_peak(events, dev)
+    shard_bytes = self.n_dim * self.n_dim * 4 // N_DEVICES
+    shard_count = bufs.get(shard_bytes, 0)
+    # should have at least 8 sharded buffers (the 8 hidden-layer sharded params)
+    self.assertGreaterEqual(shard_count, 8,
+      f"expected >= 8 sharded buffers ({shard_bytes}B) at peak, got {shard_count}. all sizes: {bufs}")
+
+  # -- correctness: optimizer updates sharded params --
+
+  def test_fsdp_params_update_across_steps(self):
+    """Sharded params should change after each optimizer step."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, sharded)
+    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    # snapshot sharded param values before step
+    before = [p.numpy().copy() for p in sharded]
+    _step(X[0], Y[0], model, opt, _loss_fn)
+    after = [p.numpy() for p in sharded]
+    for i, (b, a) in enumerate(zip(before, after)):
+      self.assertFalse((b == a).all(), f"sharded param {i} did not change after optimizer step")
+
+  def test_fsdp_multi_step_params_keep_updating(self):
+    """Params should keep changing across multiple steps (no stale allgather)."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, sharded)
+    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    snapshots = []
+    for i in range(3):
+      _step(X[i], Y[i], model, opt, _loss_fn)
+      snapshots.append([p.numpy().copy() for p in sharded])
+    # each step should produce different param values
+    for step_idx in range(1, len(snapshots)):
+      for p_idx in range(len(sharded)):
+        self.assertFalse((snapshots[step_idx][p_idx] == snapshots[step_idx - 1][p_idx]).all(),
+          f"sharded param {p_idx} did not change between step {step_idx-1} and {step_idx}")
+
+if __name__ == '__main__':
+  unittest.main()
