@@ -36,8 +36,9 @@ class Optimizer:
     for sh_param, ag_param in zip(self.params, self._fsdp_grad_sources):
       g = unwrap(ag_param.grad)
       flat_g = g.reshape(-1)
+      n_devices = len(g.device)
       rs_uop = flat_g.uop.allreduce(Ops.ADD, g.device)._shard(0).multi(0)
-      sh_param.grad = Tensor(rs_uop, device=sh_param.device, dtype=g.dtype).reshape(sh_param.shape)
+      sh_param.grad = (Tensor(rs_uop, device=sh_param.device, dtype=g.dtype) / n_devices).reshape(sh_param.shape)
 
   def _new_optim_param(self) -> list[Tensor]:
     if self.fused: return [Tensor.zeros(self.pos_params[-1], dtype=self.param_dtype, device=self.device, requires_grad=False)]
