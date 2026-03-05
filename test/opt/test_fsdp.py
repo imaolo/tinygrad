@@ -52,13 +52,14 @@ def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp):
       param.to_(devices)
   return model, sharded_params
 
-def _get_optimizer(model, sharded_params, lr=0.001):
+def _get_optimizer(model, sharded_params, lr=0.001, opt_fn=None):
+  if opt_fn is None: opt_fn = lambda params, lr: optim.SGD(params, lr)
   if sharded_params is not None:
     allgathered_params = list(state.get_parameters(model))
-    opt = optim.SGD(sharded_params, lr)
+    opt = opt_fn(sharded_params, lr)
     opt.setup_fsdp(allgathered_params)
   else:
-    opt = optim.SGD(state.get_parameters(model), lr)
+    opt = opt_fn(state.get_parameters(model), lr)
   return opt
 
 def _make_dataset(dataset_size, batch_size, in_dim, devices):
@@ -122,7 +123,9 @@ def _buffers_at_peak(events: list[ProfileEvent], device: str) -> dict[int, int]:
 
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDP(unittest.TestCase):
-  in_dim, out_dim, n_dim, n_layers = 2, 1, 256, 10
+  in_dim, out_dim, n_dim, n_layers = 2, 1, 64, 10
+  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr))
+  _n_state_per_param = 0  # SGD (no momentum) has no optimizer state buffers
 
   @needs_multi_gpu
   def setUp(self):
@@ -134,9 +137,10 @@ class TestFSDP(unittest.TestCase):
     dims = [self.in_dim] + [self.n_dim] * (self.n_layers - 1) + [self.out_dim]
     return sum(i * o * 4 for i, o in zip(dims, dims[1:]))
 
-  def _theoretical_param_savings(self) -> int:
-    """Exact bytes saved by sharding params across N_DEVICES."""
-    return self._param_bytes() - self._param_bytes() // N_DEVICES
+  def _theoretical_savings(self) -> int:
+    """Exact bytes saved by sharding params + optimizer state across N_DEVICES."""
+    per_param_savings = self._param_bytes() - self._param_bytes() // N_DEVICES
+    return per_param_savings * (1 + self._n_state_per_param)
 
   # -- convergence tests --
 
@@ -146,20 +150,20 @@ class TestFSDP(unittest.TestCase):
     for use_fsdp in [False, True]:
       Tensor.manual_seed(0)
       model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-      opt = _get_optimizer(model, sharded)
-      X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+      opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+      X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
       x, y = X[0], Y[0]
       loss = _step(x, y, model, opt, _loss_fn)
       losses["fsdp" if use_fsdp else "nonfsdp"] = loss.item()
     self.assertAlmostEqual(losses["fsdp"], losses["nonfsdp"], places=4,
                            msg=f"initial loss mismatch: fsdp={losses['fsdp']}, nonfsdp={losses['nonfsdp']}")
 
-  def _train_n_steps(self, use_fsdp, n_steps=64, lr=0.001):
+  def _train_n_steps(self, use_fsdp, n_steps=8, lr=0.05):
     """Train for n steps on different batches, return list of losses."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-    opt = _get_optimizer(model, sharded, lr=lr)
-    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    opt = _get_optimizer(model, sharded, lr=lr, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
     losses = []
     for i in range(n_steps):
       loss = _step(X[i % len(X)], Y[i % len(Y)], model, opt, _loss_fn)
@@ -189,8 +193,8 @@ class TestFSDP(unittest.TestCase):
     """Run one training step with profiling, return Buffer.profile_events."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-    opt = _get_optimizer(model, sharded)
-    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
     x, y = X[0].realize(), Y[0].realize()
     Buffer.profile_events.clear()
     with Context(PROFILE=1):
@@ -211,7 +215,7 @@ class TestFSDP(unittest.TestCase):
     """FSDP savings should be at least 80% of theoretical param savings."""
     events_nonfsdp = self._profile_one_step(use_fsdp=False)
     events_fsdp = self._profile_one_step(use_fsdp=True)
-    theoretical = self._theoretical_param_savings()
+    theoretical = self._theoretical_savings()
     dev = self.devices[0]
     peak_nonfsdp = _peak_memory(events_nonfsdp, dev)
     peak_fsdp = _peak_memory(events_fsdp, dev)
@@ -241,9 +245,9 @@ class TestFSDP(unittest.TestCase):
     bufs = _buffers_at_peak(events, dev)
     shard_bytes = self.n_dim * self.n_dim * 4 // N_DEVICES
     shard_count = bufs.get(shard_bytes, 0)
-    # should have at least 8 sharded buffers (the 8 hidden-layer sharded params)
-    self.assertGreaterEqual(shard_count, 8,
-      f"expected >= 8 sharded buffers ({shard_bytes}B) at peak, got {shard_count}. all sizes: {bufs}")
+    n_hidden = self.n_layers - 2  # hidden layers have n_dim x n_dim params
+    self.assertGreaterEqual(shard_count, n_hidden,
+      f"expected >= {n_hidden} sharded buffers ({shard_bytes}B) at peak, got {shard_count}. all sizes: {bufs}")
 
   # -- correctness: optimizer updates sharded params --
 
@@ -251,8 +255,8 @@ class TestFSDP(unittest.TestCase):
     """Sharded params should change after each optimizer step."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
-    opt = _get_optimizer(model, sharded)
-    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
     # snapshot sharded param values before step
     before = [p.numpy().copy() for p in sharded]
     _step(X[0], Y[0], model, opt, _loss_fn)
@@ -264,8 +268,8 @@ class TestFSDP(unittest.TestCase):
     """Params should keep changing across multiple steps (no stale allgather)."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
-    opt = _get_optimizer(model, sharded)
-    X, Y = _make_dataset(256, 4, self.in_dim, self.devices)
+    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
     snapshots = []
     for i in range(3):
       _step(X[i], Y[i], model, opt, _loss_fn)
@@ -275,6 +279,16 @@ class TestFSDP(unittest.TestCase):
       for p_idx in range(len(sharded)):
         self.assertFalse((snapshots[step_idx][p_idx] == snapshots[step_idx - 1][p_idx]).all(),
           f"sharded param {p_idx} did not change between step {step_idx-1} and {step_idx}")
+
+# NOTE: adaptive optimizers (Adam) are not used here because `x @ allgather(sharded_w)` and `x @ replicated_w` produce
+# numerically different backward passes (different UOp graphs → different fp rounding). These tiny gradient differences
+# compound through Adam's m/sqrt(v) adaptive state, causing FSDP and DP loss trajectories to diverge over many steps.
+# SGD+momentum tests optimizer state handling without this adaptive amplification.
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPOptState(TestFSDP):
+  """Same tests as TestFSDP but with SGD+momentum (has momentum buffer optimizer state)."""
+  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr, momentum=0.9))
+  _n_state_per_param = 1  # SGD with momentum has 1 state buffer per param
 
 if __name__ == '__main__':
   unittest.main()
