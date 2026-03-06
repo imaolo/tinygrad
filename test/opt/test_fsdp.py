@@ -284,9 +284,10 @@ class TestFSDP(unittest.TestCase):
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
     opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    x, y = X[0], Y[0]
     losses = []
     for i in range(3):
-      loss = _step(X[i], Y[i], model, opt, _loss_fn)
+      loss = _step(x, y, model, opt, _loss_fn)
       losses.append(loss.item())
     # each step should produce a different loss (model is updating)
     for i in range(1, len(losses)):
