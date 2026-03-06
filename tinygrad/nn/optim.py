@@ -54,10 +54,12 @@ class Optimizer:
       for param in self._fsdp_grad_sources: param.grad = None
 
   def step(self):
-    """
-    Performs a single optimization step.
-    """
     Tensor.realize(*self.schedule_step())
+    if self._fsdp_grad_sources is not None:
+      for sp, ag in zip(self.params, self._fsdp_grad_sources):
+        ag.uop = ag.uop.replace(src=(ag.uop.src[0], sp.uop))
+        
+
 
   def schedule_step(self) -> list[Tensor]:
     """
