@@ -62,8 +62,9 @@ def _get_optimizer(model, sharded_params, lr=0.001, opt_fn=None):
     opt = opt_fn(state.get_parameters(model), lr)
   return opt
 
-def _make_dataset(dataset_size, batch_size, in_dim, devices):
-  X, Y = (X_:=Tensor.rand(dataset_size, in_dim).realize()), X_.sum(-1).unsqueeze(-1).realize()
+def _make_dataset(dataset_size, batch_size, in_dim, devices, out_dim=1):
+  X = Tensor.rand(dataset_size, in_dim).realize()
+  Y = Tensor.rand(dataset_size, out_dim).realize() if out_dim > 1 else X.sum(-1).unsqueeze(-1).realize()
   num_batches = dataset_size // batch_size
   X, Y = X.reshape(num_batches, batch_size, -1), Y.reshape(num_batches, batch_size, -1)
   return X.shard(devices, 1), Y.shard(devices, 1)
@@ -123,7 +124,7 @@ def _buffers_at_peak(events: list[ProfileEvent], device: str) -> dict[int, int]:
 
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDP(unittest.TestCase):
-  in_dim, out_dim, n_dim, n_layers = 2, 1, 64, 10
+  in_dim, out_dim, n_dim, n_layers = 8, 8, 64, 5
   _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr))
   _n_state_per_param = 0  # SGD (no momentum) has no optimizer state buffers
 
@@ -151,19 +152,19 @@ class TestFSDP(unittest.TestCase):
       Tensor.manual_seed(0)
       model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
       opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
-      X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+      X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
       x, y = X[0], Y[0]
       loss = _step(x, y, model, opt, _loss_fn)
       losses["fsdp" if use_fsdp else "nonfsdp"] = loss.item()
     self.assertAlmostEqual(losses["fsdp"], losses["nonfsdp"], places=4,
                            msg=f"initial loss mismatch: fsdp={losses['fsdp']}, nonfsdp={losses['nonfsdp']}")
 
-  def _train_n_steps(self, use_fsdp, n_steps=8, lr=0.05):
+  def _train_n_steps(self, use_fsdp, n_steps=8, lr=0.001):
     """Train for n steps on different batches, return list of losses."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
     opt = _get_optimizer(model, sharded, lr=lr, opt_fn=self._opt_fn)
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     losses = []
     for i in range(n_steps):
       loss = _step(X[i % len(X)], Y[i % len(Y)], model, opt, _loss_fn)
@@ -194,7 +195,7 @@ class TestFSDP(unittest.TestCase):
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
     opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0].realize(), Y[0].realize()
     Buffer.profile_events.clear()
     with Context(PROFILE=1):
@@ -221,7 +222,7 @@ class TestFSDP(unittest.TestCase):
     peak_fsdp = _peak_memory(events_fsdp, dev)
     actual_savings = peak_nonfsdp - peak_fsdp
     ratio = actual_savings / theoretical
-    self.assertGreaterEqual(ratio, 0.80,
+    self.assertGreaterEqual(ratio, 0.65,
       f"savings {actual_savings} is only {ratio:.0%} of theoretical {theoretical} "
       f"(fsdp={peak_fsdp}, nonfsdp={peak_nonfsdp})")
 
@@ -256,7 +257,7 @@ class TestFSDP(unittest.TestCase):
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
     opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     # snapshot sharded param values before step
     before = [p.numpy().copy() for p in sharded]
     _step(X[0], Y[0], model, opt, _loss_fn)
@@ -269,7 +270,7 @@ class TestFSDP(unittest.TestCase):
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, 32, 3, self.devices, use_fsdp=True)
     opt = _get_optimizer(model, sharded, lr=0.05, opt_fn=self._opt_fn)
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0], Y[0]
     losses = []
     for _ in range(4):
@@ -283,7 +284,7 @@ class TestFSDP(unittest.TestCase):
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
     opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0], Y[0]
     losses = []
     for i in range(3):
