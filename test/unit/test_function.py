@@ -226,6 +226,18 @@ class TestFunction(unittest.TestCase):
     np.testing.assert_equal(a.numpy(), [1,2,3])
     np.testing.assert_equal(b.numpy(), [10,20,30])
 
+  def test_remat_bug(self):
+    @function(rematerialize=True)
+    def double(a: Tensor) -> Tensor: return a * 2
+
+    w = Tensor.ones(8, 4).realize()
+    out = double(w)
+
+    idx = Tensor([[0,1,2,3],[4,5,6,7]]).realize()
+    emb = out[idx]        # consumer 1: index into output
+    logits = emb @ out.T  # consumer 2: transpose of output
+    self.assertEqual(logits.sum().item(), 1024)
+
 class TestFunctionMulti(unittest.TestCase):
   devices_2 = ("CPU:0", "CPU:1")
 

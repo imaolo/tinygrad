@@ -540,23 +540,25 @@ split_kernels = PatternMatcher([
 
 def do_remat(tsink: UOp) -> UOp:
   # record after consumers and the after's position in the source list
-  after_consumers_pos: dict[UOp, list[tuple[UOp, int]]] = {}
+  # group by the base AFTER node, not by the specific view chain, so different views of the same
+  # rematerializable CALL are recognized as multiple consumers and properly duplicated
+  after_consumers_pos: dict[UOp, list[tuple[UOp, int, UOp]]] = {}  # base_after -> [(consumer, idx, view_chain)]
   for n in tsink.toposort():
     if n.src and n.base is not n: continue
 
     for i, s in enumerate(n.src):
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
-        after_consumers_pos.setdefault(s, []).append((n, i))
+        after_consumers_pos.setdefault(s.base, []).append((n, i, s))
 
   # replace >1
   lunique_iter: itertools.count[int] = itertools.count(max([-1]+[x.arg for x in tsink.toposort() if x.op is Ops.LUNIQUE]) + 1)
   remat_rep: dict[UOp, UOp] = {}
-  for after_chain, consumers_pos in after_consumers_pos.items():
+  for after_base, consumers_pos in after_consumers_pos.items():
     if len(consumers_pos) <= 1: continue
 
-    old_buf = after_chain.base.src[0]
-    old_call = after_chain.base.src[1]
-    for consumer, idx in consumers_pos[1:]:
+    old_buf = after_base.src[0]
+    old_call = after_base.src[1]
+    for consumer, idx, after_chain in consumers_pos[1:]:
       new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
       new_after = after_chain.substitute({old_buf: new_buf.reshape(old_buf.shape)})
       # ensure rematerialized CALL retains rematerialize=True for scheduler chaining
