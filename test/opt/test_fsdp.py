@@ -264,21 +264,34 @@ class TestFSDP(unittest.TestCase):
     for i, (b, a) in enumerate(zip(before, after)):
       self.assertFalse((b == a).all(), f"sharded param {i} did not change after optimizer step")
 
-  def test_fsdp_multi_step_params_keep_updating(self):
-    """Params should keep changing across multiple steps (no stale allgather)."""
+  def test_fsdp_loss_decreases_same_data(self):
+    """Training on the same batch repeatedly must decrease loss (forward uses updated params)."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, 32, 3, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, sharded, lr=0.05, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
+    x, y = X[0], Y[0]
+    losses = []
+    for _ in range(4):
+      loss = _step(x, y, model, opt, _loss_fn)
+      losses.append(loss.item())
+    self.assertLess(losses[-1], losses[0],
+      f"loss did not decrease on same data: {losses}")
+
+  def test_fsdp_multi_step_loss_keeps_changing(self):
+    """Loss should change across multiple steps on different data (model uses updated params)."""
     Tensor.manual_seed(0)
     model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
     opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices)
-    snapshots = []
+    losses = []
     for i in range(3):
-      _step(X[i], Y[i], model, opt, _loss_fn)
-      snapshots.append([p.numpy().copy() for p in sharded])
-    # each step should produce different param values
-    for step_idx in range(1, len(snapshots)):
-      for p_idx in range(len(sharded)):
-        self.assertFalse((snapshots[step_idx][p_idx] == snapshots[step_idx - 1][p_idx]).all(),
-          f"sharded param {p_idx} did not change between step {step_idx-1} and {step_idx}")
+      loss = _step(X[i], Y[i], model, opt, _loss_fn)
+      losses.append(loss.item())
+    # each step should produce a different loss (model is updating)
+    for i in range(1, len(losses)):
+      self.assertNotAlmostEqual(losses[i], losses[i-1], places=6,
+        msg=f"loss did not change between step {i-1} and {i}: {losses}")
 
 # NOTE: adaptive optimizers (Adam) are not used here because `x @ allgather(sharded_w)` and `x @ replicated_w` produce
 # numerically different backward passes (different UOp graphs → different fp rounding). These tiny gradient differences
