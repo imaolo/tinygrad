@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, math, time
 import numpy as np
-from tinygrad import Tensor, nn, fetch, Device, TinyJit, GlobalCounters
+from tinygrad import Tensor, nn, fetch, Device, TinyJit, GlobalCounters, function
 from dataclasses import dataclass
 
 @dataclass
@@ -124,17 +124,41 @@ if __name__ == "__main__":
   parser.add_argument("--batch_size", type=int, default=4, help="batch size")
   parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
   parser.add_argument("--skip_test", action="store_true", help="skip test")
-  parser.add_argument("--gpus", type=int, default=1, help="sequence length")
+  parser.add_argument("--gpus", type=int, default=1, help="number of GPUs")
+  parser.add_argument("--n_layer", type=int, default=12, help="number of transformer layers")
+  parser.add_argument("--n_head", type=int, default=12, help="number of attention heads")
+  parser.add_argument("--n_embd", type=int, default=768, help="embedding dimension")
+  parser.add_argument("--no_pretrained", action="store_true", help="skip loading pretrained weights (required for non-default model configs)")
+  parser.add_argument("--fsdp", action="store_true", help="use fully sharded data parallel")
   args = parser.parse_args()
   B, T = args.batch_size, args.sequence_length
   assert 1 <= T <= 1024
 
-  model = GPT(GPTConfig(n_layer=12, n_head=12, n_embd=768))
-  model.load_pretrained()
+  is_default_config = (args.n_layer == 12 and args.n_head == 12 and args.n_embd == 768)
+  if not is_default_config:
+    assert args.no_pretrained, "must use --no_pretrained with non-default model configs (pretrained weights won't match)"
+  if args.fsdp:
+    assert args.gpus > 1, "must use --gpus > 1 with --fsdp"
 
-  if args.gpus > 1:
-    GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus))
-    for x in nn.state.get_parameters(model): x.to_(GPUS)  # we put a copy of the model on every GPU
+  model = GPT(GPTConfig(n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd))
+  if not args.no_pretrained:
+    model.load_pretrained()
+
+  GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
+  if args.fsdp:
+    @function(rematerialize=True)
+    def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
+    sharded_params = []
+    for param in dict.fromkeys(nn.state.get_parameters(model)):
+      sharded_param = param.reshape(-1).shard(GPUS, 0).reshape(param.shape)
+      sharded_param.requires_grad_(True)
+      sharded_params.append(sharded_param)
+      ag = allgather_fxn(sharded_param)
+      param.replace(ag)
+      param.requires_grad_(True)
+  elif GPUS is not None:
+    for x in dict.fromkeys(nn.state.get_parameters(model)):
+      x.to_(GPUS)
 
   # init the tokenizer
   enc = tiktoken.get_encoding("gpt2")
@@ -168,13 +192,18 @@ if __name__ == "__main__":
   # forward backward for a few iterations
   data_iter = iter(get_batch())
   x, y = next(data_iter) # we'll overfit this batch below
-  optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
+  if args.fsdp:
+    allgathered_params = list(dict.fromkeys(nn.state.get_parameters(model)))
+    optimizer = nn.optim.SGD(sharded_params, lr=1e-3)
+    optimizer.setup_fsdp(allgathered_params)
+  else:
+    optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
 
   print(f"model state:     {sum(x.nbytes() for x in nn.state.get_parameters(model))/1e9:.2f} GB")
   print(f"optimizer state: {sum(x.nbytes() for x in nn.state.get_parameters(optimizer))/1e9:.2f} GB")
 
   # shard the data on axis 0
-  if args.gpus > 1: x, y = x.shard(GPUS, axis=0), y.shard(GPUS, axis=0)
+  if GPUS is not None: x, y = x.shard(GPUS, axis=0), y.shard(GPUS, axis=0)
 
   @TinyJit
   @Tensor.train()
@@ -182,7 +211,9 @@ if __name__ == "__main__":
     _, loss = model(x, y)
     optimizer.zero_grad()
     loss.backward()
-    return loss.realize(*optimizer.schedule_step())
+    # TODO doing these separately is required for FSDP
+    optimizer.step()
+    return loss.realize()
 
   for i in range(args.num_iterations):
     GlobalCounters.reset()
@@ -194,7 +225,7 @@ if __name__ == "__main__":
 
   if not args.skip_test:
     # copy back to single gpu for test
-    if args.gpus > 1:
+    if GPUS is not None:
       for x in nn.state.get_parameters(model): x.to_(Device.DEFAULT)
     start = "<|endoftext|>"
     start_ids = encode(start)
