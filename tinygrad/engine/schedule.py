@@ -52,11 +52,19 @@ def create_schedule(sched_sink:UOp) -> UOp:
     for p, cs in children.items():
       for c in cs:
         parents.setdefault(c, []).append(p)
-    # make each remat CALL depend on its consumer's other parents
+    # make each remat CALL depend on its consumer's other parents, skipping edges that would create cycles
     for rc in remat_calls:
+      # precompute descendants of rc to avoid adding back-edges
+      rc_descendants: set[UOp] = set()
+      visit = deque([rc])
+      while visit:
+        n = visit.popleft()
+        if n in rc_descendants: continue
+        rc_descendants.add(n)
+        for c in children.get(n, []): visit.append(c)
       for consumer in children.get(rc, []):
         for other_parent in parents.get(consumer, []):
-          if other_parent not in remat_calls:
+          if other_parent not in remat_calls and other_parent not in rc_descendants:
             children.setdefault(other_parent, []).append(rc)
             in_degree[rc] += 1
 
