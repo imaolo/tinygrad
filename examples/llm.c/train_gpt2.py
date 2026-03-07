@@ -150,6 +150,9 @@ if __name__ == "__main__":
     def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
     sharded_params = []
     for param in dict.fromkeys(nn.state.get_parameters(model)):
+      if param.requires_grad is False:
+        param.to_(GPUS)
+        continue
       sharded_param = param.reshape(-1).shard(GPUS, 0).reshape(param.shape)
       sharded_param.requires_grad_(True)
       sharded_params.append(sharded_param)
@@ -193,8 +196,8 @@ if __name__ == "__main__":
   data_iter = iter(get_batch())
   x, y = next(data_iter) # we'll overfit this batch below
   if args.fsdp:
-    allgathered_params = list(dict.fromkeys(nn.state.get_parameters(model)))
-    optimizer = nn.optim.SGD(sharded_params, lr=1e-3)
+    allgathered_params = [p for p in dict.fromkeys(nn.state.get_parameters(model)) if p.requires_grad is not False]
+    optimizer = nn.optim.AdamW(sharded_params, lr=1e-4, weight_decay=0)
     optimizer.setup_fsdp(allgathered_params)
   else:
     optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
@@ -205,7 +208,7 @@ if __name__ == "__main__":
   # shard the data on axis 0
   if GPUS is not None: x, y = x.shard(GPUS, axis=0), y.shard(GPUS, axis=0)
 
-  @TinyJit
+  # @TinyJit
   @Tensor.train()
   def step(x:Tensor, y:Tensor) -> Tensor:
     _, loss = model(x, y)
@@ -217,11 +220,14 @@ if __name__ == "__main__":
 
   for i in range(args.num_iterations):
     GlobalCounters.reset()
+    GlobalCounters.reset_peak()
     t0 = time.perf_counter()
     loss = step(x.contiguous(), y.contiguous())
     Device[Device.DEFAULT].synchronize()
     t1 = time.perf_counter()
-    print(f"iteration {i}, loss: {loss.item():.6f}, time: {(t1-t0)*1000:.3f}ms, {int(B*T/(t1-t0))} tok/s, {GlobalCounters.global_mem/1e9:.2f} GB")
+    peak_per_dev = max(GlobalCounters.peak_mem_used_per_device.values()) / 1e9 if GlobalCounters.peak_mem_used_per_device else 0
+    print(f"iteration {i}, loss: {loss.item():.6f}, time: {(t1-t0)*1000:.3f}ms, {int(B*T/(t1-t0))} tok/s, "
+          f"{GlobalCounters.global_mem/1e9:.2f} GB, peak {GlobalCounters.peak_mem_used/1e9:.2f} GB (max/dev {peak_per_dev:.2f} GB)")
 
   if not args.skip_test:
     # copy back to single gpu for test
