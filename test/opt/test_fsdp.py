@@ -34,13 +34,24 @@ class _Model:
     self.ws: list[Linear] = [Linear(i, o, bias=False) for i, o in zip(dims, dims[1:])]
   def __call__(self, x: Tensor) -> Tensor: return x.sequential(self.ws)
 
-def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp):
+class _ModelWithMask(_Model):
+  """Model with large non-trainable buffers per layer (like attention causal masks)."""
+  def __init__(self, in_dim: int, out_dim: int, n_dim: int, n_layers: int, mask_dim: int = 64):
+    super().__init__(in_dim, out_dim, n_dim, n_layers)
+    # large non-trainable buffers, similar to CausalSelfAttention.bias in GPT
+    self.masks = [Tensor.ones(mask_dim, mask_dim) for _ in range(n_layers)]
+    for m in self.masks: m.requires_grad = False
+
+def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp, model_cls=_Model):
   """Returns (model, sharded_params_or_None)."""
-  model = _Model(in_dim, out_dim, n_dim, n_layers)
+  model = model_cls(in_dim, out_dim, n_dim, n_layers)
   sharded_params = None
   if use_fsdp:
     sharded_params = []
     for param in state.get_parameters(model):
+      if param.requires_grad is False:
+        param.to_(devices)
+        continue
       sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
       sharded_param.requires_grad_(True)
       sharded_params.append(sharded_param)
@@ -55,7 +66,7 @@ def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp):
 def _get_optimizer(model, sharded_params, lr=0.001, opt_fn=None):
   if opt_fn is None: opt_fn = lambda params, lr: optim.SGD(params, lr)
   if sharded_params is not None:
-    allgathered_params = list(state.get_parameters(model))
+    allgathered_params = [p for p in state.get_parameters(model) if p.requires_grad is not False]
     opt = opt_fn(sharded_params, lr)
     opt.setup_fsdp(allgathered_params)
   else:
@@ -304,6 +315,37 @@ class TestFSDPOptState(TestFSDP):
   """Same tests as TestFSDP but with SGD+momentum (has momentum buffer optimizer state)."""
   _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr, momentum=0.9))
   _n_state_per_param = 1  # SGD with momentum has 1 state buffer per param
+
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPWithMask(TestFSDP):
+  """Tests FSDP with a model containing large non-trainable buffers (like attention causal masks).
+  Non-trainable tensors should be replicated, not FSDP-sharded, and should not get optimizer state."""
+
+  @needs_multi_gpu
+  def setUp(self):
+    Tensor.manual_seed(0)
+    self.devices = _devices()
+    self._model_cls = _ModelWithMask
+
+  def _profile_one_step(self, use_fsdp: bool) -> list[ProfileEvent]:
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp, model_cls=_ModelWithMask)
+    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
+    x, y = X[0].realize(), Y[0].realize()
+    Buffer.profile_events.clear()
+    with Context(PROFILE=1):
+      _step(x, y, model, opt, _loss_fn)
+    return list(Buffer.profile_events)
+
+  def test_fsdp_nontrainable_not_in_optimizer(self):
+    """Non-trainable tensors (requires_grad=False) must not appear in optimizer params."""
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, True, model_cls=_ModelWithMask)
+    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    n_trainable = sum(1 for p in state.get_parameters(model) if p.requires_grad is not False)
+    self.assertEqual(len(opt.params), n_trainable,
+      f"optimizer has {len(opt.params)} params but model has {n_trainable} trainable params")
 
 if __name__ == '__main__':
   unittest.main()
