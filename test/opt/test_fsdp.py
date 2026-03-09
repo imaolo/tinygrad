@@ -1,6 +1,6 @@
 import unittest, functools
 from collections import defaultdict
-from tinygrad import Tensor, Device, function
+from tinygrad import Tensor, Device, TinyJit, function, GlobalCounters
 from tinygrad.nn import Linear, optim, state
 from tinygrad.helpers import ProfilePointEvent, ProfileEvent, Context, CI
 from tinygrad.device import Buffer
@@ -346,6 +346,72 @@ class TestFSDPWithMask(TestFSDP):
     n_trainable = sum(1 for p in state.get_parameters(model) if p.requires_grad is not False)
     self.assertEqual(len(opt.params), n_trainable,
       f"optimizer has {len(opt.params)} params but model has {n_trainable} trainable params")
+
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPJit(unittest.TestCase):
+  """Test FSDP with JIT enabled, verifying memory savings are preserved."""
+  in_dim, out_dim, n_dim, n_layers = 8, 8, 64, 5
+  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr))
+
+  @needs_multi_gpu
+  def setUp(self):
+    Tensor.manual_seed(0)
+    self.devices = _devices()
+
+  def _train_jit(self, use_fsdp, n_steps=4, lr=0.001):
+    Tensor.manual_seed(0)
+    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, sharded, lr=lr, opt_fn=self._opt_fn)
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
+
+    @TinyJit
+    @Tensor.train()
+    def jit_step(x, y):
+      opt.zero_grad()
+      out = model(x)
+      loss = _loss_fn(out, y)
+      loss.backward()
+      opt.step()
+      return loss.realize()
+
+    losses, peaks = [], []
+    for i in range(n_steps):
+      GlobalCounters.reset()
+      GlobalCounters.reset_peak()
+      loss = jit_step(X[i % len(X)].contiguous(), Y[i % len(Y)].contiguous())
+      Device[Device.DEFAULT].synchronize()
+      peaks.append(max(GlobalCounters.peak_mem_used_per_device.values()) if GlobalCounters.peak_mem_used_per_device else 0)
+      losses.append(loss.item())
+    return losses, peaks
+
+  def test_fsdp_jit_converges(self):
+    """FSDP+JIT should converge (average loss decreases over training)."""
+    losses, _ = self._train_jit(use_fsdp=True, n_steps=8, lr=0.01)
+    q = len(losses) // 4
+    avg_first = sum(losses[:q]) / q
+    avg_last = sum(losses[-q:]) / q
+    self.assertLess(avg_last, avg_first,
+      f"FSDP+JIT not converging: first quarter avg={avg_first:.4f}, last quarter avg={avg_last:.4f}, losses={losses}")
+
+  def test_fsdp_jit_lower_peak_than_nonfsdp_jit(self):
+    """FSDP+JIT peak memory should be less than non-FSDP+JIT after JIT warmup."""
+    _, peaks_nonfsdp = self._train_jit(use_fsdp=False, n_steps=4)
+    with Context(MEMORY_PLANNER=2):
+      _, peaks_fsdp = self._train_jit(use_fsdp=True, n_steps=4)
+    # compare post-warmup peaks (iteration 2+, after JIT capture)
+    peak_nonfsdp = peaks_nonfsdp[-1]
+    peak_fsdp = peaks_fsdp[-1]
+    self.assertLess(peak_fsdp, peak_nonfsdp,
+      f"FSDP+JIT peak {peak_fsdp/1e6:.1f} MB should be < non-FSDP+JIT peak {peak_nonfsdp/1e6:.1f} MB")
+
+  def test_fsdp_jit_memplan2_reduces_memory(self):
+    """MEMORY_PLANNER=2 should reduce FSDP+JIT peak memory vs MEMORY_PLANNER=1."""
+    _, peaks_mp1 = self._train_jit(use_fsdp=True, n_steps=4)
+    with Context(MEMORY_PLANNER=2):
+      _, peaks_mp2 = self._train_jit(use_fsdp=True, n_steps=4)
+    # compare post-warmup peaks
+    self.assertLess(peaks_mp2[-1], peaks_mp1[-1],
+      f"MEMORY_PLANNER=2 peak {peaks_mp2[-1]/1e6:.1f} MB should be < default peak {peaks_mp1[-1]/1e6:.1f} MB")
 
 if __name__ == '__main__':
   unittest.main()
