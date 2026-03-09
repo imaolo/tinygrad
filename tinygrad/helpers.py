@@ -236,8 +236,14 @@ class GlobalCounters:
   kernel_count: ClassVar[int] = 0
   mem_used: ClassVar[int] = 0   # NOTE: this is not reset
   mem_used_per_device: ClassVar[defaultdict] = defaultdict(int)   # NOTE: this is not reset
+  peak_mem_used: ClassVar[int] = 0
+  peak_mem_used_per_device: ClassVar[defaultdict] = defaultdict(int)
   @staticmethod
   def reset(): GlobalCounters.global_ops, GlobalCounters.global_mem, GlobalCounters.time_sum_s, GlobalCounters.kernel_count = 0,0,0.0,0
+  @staticmethod
+  def reset_peak():
+    GlobalCounters.peak_mem_used = GlobalCounters.mem_used
+    GlobalCounters.peak_mem_used_per_device = defaultdict(int, GlobalCounters.mem_used_per_device)
 
 # **************** timer and profiler ****************
 
