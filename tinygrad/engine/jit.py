@@ -1,7 +1,7 @@
 from typing import TypeVar, Generic, Callable, cast, Any
 import functools, collections
 from tinygrad.tensor import Tensor
-from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, partition, unwrap
+from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, partition, unwrap, MEMORY_PLANNER
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType
 from tinygrad.uop.ops import UOp, Variable, sym_infer, Ops
@@ -321,7 +321,7 @@ class TinyJit(Generic[ReturnType]):
       self._jit_cache: list[ExecItem] = []
       self._buffer_replace: WeakKeyDictionary[Buffer, Buffer] = WeakKeyDictionary()
       # TODO: should we always disable the memory planner here? it must be off for prune
-      with Context(BEAM=getenv("JITBEAM", BEAM.value), NO_MEMORY_PLANNER=int(self.prune)):
+      with Context(BEAM=getenv("JITBEAM", BEAM.value), MEMORY_PLANNER=int(not self.prune)):
         capturing.append(self)
         try:
           ret = self.fxn(*args, **kwargs)
@@ -357,8 +357,9 @@ class TinyJit(Generic[ReturnType]):
         jit_cache = pruned
 
       # memory planning (optional)
-      BufferXfer
-      assigned = _internal_memory_planner([cast(list[Buffer], item.bufs) for item in jit_cache], debug_prefix="JIT ")
+      # Exclude buffers involved in transfer ops to preserve parallelism.
+      noopt_buffers = {b for ji in jit_cache if isinstance(ji.prg, (BufferXfer, BufferCopy, EncDec)) for b in ji.bufs}
+      assigned = _internal_memory_planner([cast(list[Buffer], item.bufs) for item in jit_cache], noopt_buffers, MEMORY_PLANNER > 2, debug_prefix="JIT ")
       jit_cache = [replace(item, bufs=[assigned.get(b,b).ensure_allocated() for b in item.bufs if b is not None]) for item in jit_cache]
 
       input_replace = get_input_replace(jit_cache, input_buffers)

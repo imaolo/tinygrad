@@ -2,7 +2,7 @@ from typing import cast
 from collections import defaultdict
 from tinygrad.engine.realize import ExecItem
 from tinygrad.device import Device, Buffer
-from tinygrad.helpers import NO_MEMORY_PLANNER, dedup, DEBUG, round_up
+from tinygrad.helpers import MEMORY_PLANNER, dedup, DEBUG, round_up
 from tinygrad.uop.ops import Ops
 from tinygrad.dtype import dtypes, ImageDType
 from tinygrad.runtime.support.memory import TLSFAllocator
@@ -10,7 +10,7 @@ from tinygrad.runtime.support.memory import TLSFAllocator
 # **************** memory planning ****************
 
 def _internal_memory_planner(buffers:list[list[Buffer]], noopt_buffers=None, ignore_checks=False, debug_prefix="") -> dict[Buffer, Buffer]:
-  if NO_MEMORY_PLANNER: return {}
+  if not MEMORY_PLANNER: return {}
   first_appearance, last_appearance, buf_to_opt = {}, {}, set()
   for i,u in enumerate(buffers):
     for buf in u:
