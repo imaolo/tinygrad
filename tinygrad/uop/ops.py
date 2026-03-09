@@ -937,7 +937,7 @@ def should_resolve_call(c:UOp) -> bool:
   # don't resolve real kernel calls, sink or program
   if c.src[0].op is Ops.SINK and isinstance(c.src[0].arg, KernelInfo): return False
   if c.src[0].op in {Ops.PROGRAM, Ops.LINEAR, Ops.COPY, Ops.CUSTOM_FUNCTION}: return False
-  if c.arg.precompile: return False
+  if c.arg.precompile or c.arg.rematerialize: return False
   return True
 
 # ******** ops in python ********
