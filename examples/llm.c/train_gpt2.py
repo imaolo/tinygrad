@@ -208,7 +208,7 @@ if __name__ == "__main__":
   # shard the data on axis 0
   if GPUS is not None: x, y = x.shard(GPUS, axis=0), y.shard(GPUS, axis=0)
 
-  # @TinyJit
+  @TinyJit
   @Tensor.train()
   def step(x:Tensor, y:Tensor) -> Tensor:
     _, loss = model(x, y)
