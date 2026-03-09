@@ -13,6 +13,13 @@ class GradAccClipAdamW(Optimizer):
     self.grad_acc, self.clip_norm = grad_acc, clip_norm
 
   def fstep(self, grads:list[Tensor]):
+    # FSDP: reduce-scatter grads from allgathered params onto sharded params
+    if self._fsdp_grad_sources is not None:
+      for ag, g in zip(self._fsdp_grad_sources, grads):
+        ag.grad = g
+      self._reduce_scatter_grads()
+      grads = [p.grad for p in self.params]  # type: ignore[misc]
+
     if self.fused:
       out, extra = self._step([], grads)
       updates = [out[0][self.pos_params[i]:self.pos_params[i+1]].reshape(tt.shape) for i, tt in enumerate(self.params)]
@@ -22,6 +29,12 @@ class GradAccClipAdamW(Optimizer):
     to_realize = extra+self.params+self.buffers
 
     Tensor.realize(*to_realize)
+
+    # FSDP: update allgathered params to point to updated sharded params
+    if self._fsdp_grad_sources is not None:
+      for sp, ag in zip(self.params, self._fsdp_grad_sources):
+        ag.uop = ag.uop.replace(src=(ag.uop.src[0], sp.uop))
+
     return extra[-1]
 
   def _step(self, params:list[Tensor], grads:list[Tensor]) -> tuple[list[Tensor], list[Tensor]]:

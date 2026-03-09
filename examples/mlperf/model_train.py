@@ -2,7 +2,7 @@ import os, time, math, functools, random, contextlib
 from pathlib import Path
 import multiprocessing
 
-from tinygrad import Device, GlobalCounters, Tensor, TinyJit, dtypes
+from tinygrad import Device, GlobalCounters, Tensor, TinyJit, dtypes, function
 from tinygrad.helpers import getenv, BEAM, WINO, round_up, diskcache_clear, Profiling, profile_marker, DEBUG
 from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, safe_load, safe_save
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
@@ -1352,7 +1352,24 @@ def train_llama3():
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape))
 
-  if (DP := getenv("DP", 1)) > 1:
+  FSDP = getenv("FSDP", 0)
+  if FSDP:
+    fsdp_device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
+    @function(rematerialize=True)
+    def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
+
+    sharded_params, allgathered_params = [], []
+    for param in dict.fromkeys(get_parameters(model)):
+      sharded_param = param.reshape(-1).shard(fsdp_device, 0).reshape(param.shape)
+      sharded_param.requires_grad_(True)
+      sharded_params.append(sharded_param)
+      ag = allgather_fxn(sharded_param)
+      allgathered_params.append(ag)
+      param.replace(ag)
+      param.requires_grad_(True)
+    vocab_mask.shard_(fsdp_device, axis=None)
+
+  if not FSDP and (DP := getenv("DP", 1)) > 1:
     device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
     for v in get_parameters(model):
       v.shard_(device, axis=None)
@@ -1382,15 +1399,25 @@ def train_llama3():
     vocab_mask.shard_(device, axis=2).realize()
 
   optim_device = "CPU" if getenv("OFFLOAD_OPTIM") else None
-  optim = GradAccClipAdamW(get_parameters(model), lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
-                           eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
-
-  # init grads
-  for p in optim.params:
-    p.grad = p.empty_like().realize()
-  grads: list[Tensor] = [p.grad for p in optim.params]
-  for p in optim.params:
-    p.grad.assign(p.grad.zeros_like()).realize()
+  if FSDP:
+    optim = GradAccClipAdamW(sharded_params, lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
+                             eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
+    optim.setup_fsdp(allgathered_params)
+    # pre-allocate grads on allgathered params (backward targets these)
+    for p in allgathered_params:
+      p.grad = p.empty_like().realize()
+    grads: list[Tensor] = [p.grad for p in allgathered_params]
+    for p in allgathered_params:
+      p.grad.assign(p.grad.zeros_like()).realize()
+  else:
+    optim = GradAccClipAdamW(get_parameters(model), lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
+                             eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
+    # init grads
+    for p in optim.params:
+      p.grad = p.empty_like().realize()
+    grads: list[Tensor] = [p.grad for p in optim.params]
+    for p in optim.params:
+      p.grad.assign(p.grad.zeros_like()).realize()
 
   scheduler = CosineAnnealingLRWithWarmup(optim, opt_base_learning_rate, opt_end_learning_rate, opt_learning_rate_warmup_steps, opt_learning_rate_decay_steps)
 
@@ -1405,17 +1432,22 @@ def train_llama3():
 
   @TinyJit
   def minibatch(tokens:Tensor):
-    if (DP := getenv("DP", 1)) > 1:
+    if FSDP:
+      tokens = tokens.to(None).shard(fsdp_device, 0)
+    elif (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
     if (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
       tokens = tokens.shard(device)
-    if DP == 1 and MP == 1: tokens = tokens.to(None)
+    if not FSDP and getenv("DP", 1) == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1], start_pos=0, temperature=math.nan)
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     loss.backward()
-    assert all(p.grad is g for p,g in zip(optim.params, grads))
+    if FSDP:
+      assert all(p.grad is g for p,g in zip(allgathered_params, grads))
+    else:
+      assert all(p.grad is g for p,g in zip(optim.params, grads))
     Tensor.realize(loss, *grads)
     return loss.flatten().float().to("CPU")
 
@@ -1435,13 +1467,15 @@ def train_llama3():
   @TinyJit
   @Tensor.train(False)
   def eval_step(tokens:Tensor):
-    if (DP := getenv("DP", 1)) > 1:
+    if FSDP:
+      tokens = tokens.to(None).shard(fsdp_device, 0)
+    elif (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
     if (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
       tokens = tokens.shard(device)
-    if DP == 1 and MP == 1: tokens = tokens.to(None)
+    if not FSDP and getenv("DP", 1) == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1], start_pos=0, temperature=math.nan)
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     return loss.flatten().float().to("CPU")
@@ -1478,6 +1512,7 @@ def train_llama3():
   step_times = []
   while i < MAX_STEPS:
     GlobalCounters.reset()
+    GlobalCounters.reset_peak()
     actual_gbs = GBS if i >= 2 else BS
     if getenv("TRAIN", 1):
       profile_marker(f"train @ {i}")
@@ -1513,11 +1548,13 @@ def train_llama3():
       sequences_seen += actual_gbs
 
       mem_gb = GlobalCounters.mem_used / 1e9
+      peak_per_dev = max(GlobalCounters.peak_mem_used_per_device.values()) / 1e9 if GlobalCounters.peak_mem_used_per_device else 0
       gflops = GlobalCounters.global_ops / 1e9 / dev_time
-      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * max(getenv("DP", 1), getenv("MP", 1)) * 2.3e15)) * 100
+      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * max(getenv("DP", 1), getenv("MP", 1), FSDP) * 2.3e15)) * 100
       tqdm.write(
           f"{i:5} {step_time:.3f} s step, {gbs_time:.3f} s gbs, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, " \
-          f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
+          f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, peak {peak_per_dev:.2f} GB/dev, " \
+          f"{gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
       if DEBUG >= 1: tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
 
       if WANDB:
