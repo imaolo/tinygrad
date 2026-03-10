@@ -446,7 +446,7 @@ class Tensor(OpMixin):
     return self if isinstance(self.device, tuple) and (y.device, y.uop.axis) == (self.device, self.uop.axis) else self.shard(y.device, y.uop.axis)
 
   def allgather(self) -> Tensor:
-    return Tensor(self.uop.copy_to_device(self.device), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
+    return Tensor(self.uop.allgather(), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
 
   CHUNK_SIZE = 2**20
   def fs_load(self, size:int) -> Tensor:
