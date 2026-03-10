@@ -569,7 +569,7 @@ def get_kernel_graph(sink:UOp) -> UOp:
   # create buffers for each rematerialize call
   tsink = do_remat(sink)
 
-  tsink = graph_rewrite(do_remat(tsink), multi_pm, name="multi_pm")
+  tsink = graph_rewrite(tsink, multi_pm, name="multi_pm")
   if OPENPILOT_HACKS: tsink = graph_rewrite(tsink, pm_fold_moved_assign, ctx={}, name="fold moved assigns")
   tsink = graph_rewrite(tsink, pm_syntactic_sugar+pm_mops+earliest_rewrites, bottom_up=True, name="earliest rewrites")
 
