@@ -544,7 +544,7 @@ def do_remat(tsink: UOp) -> UOp:
   # rematerializable CALL are recognized as multiple consumers and properly duplicated
   after_consumers_pos: dict[UOp, list[tuple[UOp, int, UOp]]] = {}  # base_after -> [(consumer, idx, view_chain)]
   for n in tsink.toposort():
-    if n.op is Ops.SINK or (n.src and n.base is not n): continue
+    if n.op is Ops.SINK or len(n.src) == 0 or n.base is not n: continue
 
     for i, s in enumerate(n.src):
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
