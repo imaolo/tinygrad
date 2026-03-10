@@ -549,7 +549,7 @@ def do_remat(tsink: UOp) -> UOp:
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
         after_consumers_pos.setdefault(s, []).append((c, i))
 
-  # replace >1
+  # replace consumer sources
   lunique_iter = itertools.count(tsink.lunique_start)
   remat_rep: dict[UOp, UOp] = {}
   for after, c_pos in after_consumers_pos.items():
