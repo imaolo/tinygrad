@@ -539,33 +539,27 @@ split_kernels = PatternMatcher([
 
 def do_remat(tsink: UOp) -> UOp:
   if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
-  # record after consumers and the after's position in the source list
-  # group by the base AFTER node, not by the specific view chain, so different views of the same
-  # rematerializable CALL are recognized as multiple consumers and properly duplicated
-  after_consumers_pos: dict[UOp, list[tuple[UOp, int, UOp]]] = {}  # base_after -> [(consumer, idx, view_chain)]
-  for n in tsink.toposort():
-    if n.op is Ops.SINK or not n.src or n.base is not n: continue
 
-    for i, s in enumerate(n.src):
+  # map remat afters to their consumers and the position in the consumer
+  after_consumers_pos: dict[UOp, list[tuple[UOp, int]]] = {}
+  for c in tsink.toposort():
+    if c.op is Ops.SINK or not c.src or c.base is not c: continue
+
+    for i, s in enumerate(c.src):
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
-        after_consumers_pos.setdefault(s.base, []).append((n, i, s))
+        after_consumers_pos.setdefault(s, []).append((c, i))
 
   # replace >1
   lunique_iter: itertools.count[int] = itertools.count(max([-1]+[x.arg for x in tsink.toposort() if x.op is Ops.LUNIQUE]) + 1)
   remat_rep: dict[UOp, UOp] = {}
-  for after_base, consumers_pos in after_consumers_pos.items():
-    if len(consumers_pos) <= 1: continue
+  for after, c_pos in after_consumers_pos.items():
+    if len(c_pos) <= 1: continue
 
-    old_buf = after_base.src[0]
-    old_call = after_base.src[1]
-    for consumer, idx, after_chain in consumers_pos[1:]:
+    old_buf = after.base.src[0]
+    for c, idx in c_pos[1:]:
       new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
-      new_after = after_chain.substitute({old_buf: new_buf.reshape(old_buf.shape)})
-      # ensure rematerialized CALL retains rematerialize=True for scheduler chaining
-      new_call = new_after.base.src[1]
-      if new_call is old_call and not cast(CallInfo, new_call.arg).rematerialize:
-        new_after = new_after.substitute({new_call: new_call.replace(arg=replace(new_call.arg, rematerialize=True))})
-      remat_rep[consumer] = remat_rep.get(consumer, consumer).replace_src_at(idx, new_after)
+      new_after = after.substitute({old_buf: new_buf.reshape(old_buf.shape)})
+      remat_rep[c] = remat_rep.get(c, c).replace_src_at(idx, new_after)
 
   if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
   return tsink
