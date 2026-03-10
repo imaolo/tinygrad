@@ -538,12 +538,13 @@ split_kernels = PatternMatcher([
 ])
 
 def do_remat(tsink: UOp) -> UOp:
+  if not any(uop.op is Ops.CALL and uop.arg.rematerialize for uop in tsink.toposort()): return tsink
   # record after consumers and the after's position in the source list
   # group by the base AFTER node, not by the specific view chain, so different views of the same
   # rematerializable CALL are recognized as multiple consumers and properly duplicated
   after_consumers_pos: dict[UOp, list[tuple[UOp, int, UOp]]] = {}  # base_after -> [(consumer, idx, view_chain)]
   for n in tsink.toposort():
-    if n.src and n.base is not n: continue
+    if n.op is Ops.SINK or (n.src and n.base is not n): continue
 
     for i, s in enumerate(n.src):
       if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
