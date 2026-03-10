@@ -634,6 +634,9 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   @staticmethod
   def unique(arg:int|None=None): return UOp(Ops.UNIQUE, arg=next(UOp.unique_num) if arg is None else arg)
 
+  @functools.cached_property
+  def lunique_start(self) -> int: return max([-1]+[x.arg for x in self.toposort() if x.op is Ops.LUNIQUE]) + 1
+
   # *** uop Buffer stuff ***
 
   @staticmethod

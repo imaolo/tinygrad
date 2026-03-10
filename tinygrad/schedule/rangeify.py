@@ -550,7 +550,7 @@ def do_remat(tsink: UOp) -> UOp:
         after_consumers_pos.setdefault(s, []).append((c, i))
 
   # replace >1
-  lunique_iter: itertools.count[int] = itertools.count(max([-1]+[x.arg for x in tsink.toposort() if x.op is Ops.LUNIQUE]) + 1)
+  lunique_iter = itertools.count(tsink.lunique_start)
   remat_rep: dict[UOp, UOp] = {}
   for after, c_pos in after_consumers_pos.items():
     if len(c_pos) <= 1: continue
@@ -582,8 +582,7 @@ def get_kernel_graph(sink:UOp) -> UOp:
   if VIZ: graph_rewrite(tsink, PatternMatcher([]), name="View Rangeify")
 
   # bufferize -> store
-  lunique_start: int = max([-1]+[x.arg for x in tsink.toposort() if x.op is Ops.LUNIQUE]) + 1
-  tsink = graph_rewrite(tsink, pm_add_buffers+pm_add_range_tags, ctx=itertools.count(lunique_start), bottom_up=True, name="bufferize to store")
+  tsink = graph_rewrite(tsink, pm_add_buffers+pm_add_range_tags, ctx=itertools.count(tsink.lunique_start), bottom_up=True, name="bufferize to store")
   tsink = graph_rewrite(tsink, split_kernels, bottom_up=True, name="split kernels")
 
   # WAR deps: if kernel U reads buffer S, and S is also written by another kernel, S's write must wait for U to finish
