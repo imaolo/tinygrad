@@ -1448,8 +1448,9 @@ def train_llama3():
       assert all(p.grad is g for p,g in zip(allgathered_params, grads))
     else:
       assert all(p.grad is g for p,g in zip(optim.params, grads))
-    Tensor.realize(loss, *grads)
-    return loss.flatten().float().to("CPU")
+    loss_cpu = loss.flatten().float().to("CPU")
+    Tensor.realize(loss_cpu, *grads)
+    return loss_cpu
 
   @TinyJit
   def optim_step():
@@ -1459,10 +1460,11 @@ def train_llama3():
     for g in grads:
       g.assign(g.zeros_like()).realize()
 
-    lr = optim.lr
-    Tensor.realize(lr, *grads)
+    lr_cpu = optim.lr.float().to("CPU")
+    grad_norm_cpu = grad_norm.float().to("CPU")
+    Tensor.realize(lr_cpu, grad_norm_cpu, *grads)
 
-    return lr.float().to("CPU"), grad_norm.float().to("CPU")
+    return lr_cpu, grad_norm_cpu
 
   @TinyJit
   @Tensor.train(False)
