@@ -240,7 +240,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
         return None
 
       # passthrough ops
-      case Ops.REDUCE | Ops.MSTACK | Ops.MSELECT | Ops.DETACH | Ops.CONTIGUOUS | Ops.CONTIGUOUS_BACKWARD | Ops.AFTER | Ops.END:
+      case Ops.REDUCE | Ops.MSTACK | Ops.MSELECT | Ops.DETACH | Ops.CONTIGUOUS | Ops.CONTIGUOUS_BACKWARD | Ops.AFTER | Ops.END | Ops.FSDP:
         return self.src[0]._shape
 
       case Ops.CALL:
@@ -449,6 +449,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   def end(self, *src:UOp): return UOp(Ops.END, src=(self,)+src) if len(src) else self
   def after(self, *src:UOp, **kwargs): return UOp(Ops.AFTER, self.dtype, (self,)+src, **kwargs) if len(src) else self
   def assign(self, x:UOp): return UOp(Ops.ASSIGN, self.dtype, (self, x))
+  def fsdp(self): return UOp(Ops.FSDP, self.dtype, (self,))
   def barrier(self, *src:UOp): return UOp(Ops.BARRIER, src=(self,)+src)
   def contract(self, *rngs:UOp):
     assert all(x.arg[-1] == AxisType.UPCAST for x in rngs), "all contract ranges must be upcast"
@@ -523,7 +524,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   @functools.cached_property
   def axis(self) -> int|None:
     # COPY removes axis. TODO: add more tests for this, and consider MSELECT/MSTACK
-    if self.op is Ops.COPY: return None
+    if self.op in {Ops.COPY, Ops.FSDP}: return None
     if self.op is Ops.MULTI: return self.arg
     # PARAM: axis is stored as a MULTI source
     if self.op is Ops.PARAM:
