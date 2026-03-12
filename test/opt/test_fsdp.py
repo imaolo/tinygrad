@@ -316,6 +316,13 @@ class TestFSDPOptState(TestFSDP):
   _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr, momentum=0.9))
   _n_state_per_param = 1  # SGD with momentum has 1 state buffer per param
 
+# TODO: FSDP does not yet support FUSE_OPTIM — pad_multi asserts on padding along the sharded axis
+@unittest.skip("FSDP + FUSE_OPTIM not yet supported")
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPFusedOptim(TestFSDP):
+  """Same tests as TestFSDP but with FUSE_OPTIM=1."""
+  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr, fused=True))
+
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDPWithMask(TestFSDP):
   """Tests FSDP with a model containing large non-trainable buffers (like attention causal masks).
