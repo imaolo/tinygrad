@@ -29,6 +29,12 @@ def call_gradient(ctx:UOp, k:UOp) -> tuple[UOp|None, ...]:
       ret.append(None)
   return tuple(ret)
 
+def fsdp_gradient(ctx:UOp, fsdp:UOp) -> tuple[UOp|None, ...]:
+  if not isinstance(ctx.device, tuple): raise RuntimeError(f"FSDP grad expected tuple device, got {ctx.device}")
+  # backward: full grad on gathered param -> sharded grad for source param
+  rs = ctx.reshape((-1,)).allreduce(Ops.ADD, ctx.device)._shard(0).multi(0) / len(ctx.device)
+  return (rs.reshape(fsdp.src[0].shape),)
+
 # ctx is grad_output
 pm_gradient = PatternMatcher([
   (UPat(Ops.CAST, name="ret"), lambda ctx, ret: (ctx.cast(ret.src[0].dtype),)),
@@ -56,6 +62,7 @@ pm_gradient = PatternMatcher([
   (UPat(Ops.FLIP, name="ret"), lambda ctx, ret: (ctx.flip([i for i,x in enumerate(ret.marg) if x]),)),
   (UPat(Ops.COPY, name="ret"), lambda ctx, ret: (ctx.copy_to_device(ret.src[0].device), None)),
   (UPat(Ops.MULTI, name="ret"), lambda ctx, ret: ctx.shard(ret.device, ret.axis).src),
+  (UPat(Ops.FSDP, name="fsdp"), fsdp_gradient),
   # NOTE: this is only correct when the KERNEL has a single output
   (UPat(Ops.AFTER), lambda ctx: (ctx, ctx)),
   # gradient on CALL: use provided grad_fxn or auto-differentiate
