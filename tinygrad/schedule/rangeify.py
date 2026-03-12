@@ -542,6 +542,8 @@ split_kernels = PatternMatcher([
   (UPat((Ops.STORE, Ops.END), name="x"), split_store),
 ])
 
+def is_remat(x): return x.src and x.base.op is Ops.AFTER and (call:=x.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize
+
 def do_remat(tsink: UOp) -> UOp:
   if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
 
@@ -551,8 +553,7 @@ def do_remat(tsink: UOp) -> UOp:
     if c.op is Ops.SINK or not c.src or c.base is not c: continue
 
     for i, s in enumerate(c.src):
-      if s.src and s.base.op is Ops.AFTER and (call:=s.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize:
-        after_consumers_pos.setdefault(s, []).append((c, i))
+      if is_remat(s): after_consumers_pos.setdefault(s, []).append((c, i))
 
   # replace consumer sources
   lunique_iter = itertools.count(tsink.lunique_start)
@@ -565,6 +566,22 @@ def do_remat(tsink: UOp) -> UOp:
       new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
       new_after = after.substitute({old_buf: new_buf.reshape(old_buf.shape)})
       remat_rep[c] = remat_rep.get(c, c).replace_src_at(idx, new_after)
+
+  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
+  return tsink
+
+def add_remat_dependencies(tsink: UOp) -> UOp:
+  if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
+
+  remat_rep: dict[UOp, UOp] = {}
+  for c in tsink.toposort():
+    if not (remat_src_idxs:=[i for i, s in enumerate(c.src) if is_remat(s)]): continue
+
+    after_sources = tuple([s for i, s in enumerate(c.src) if s.op is Ops.AFTER and i not in remat_src_idxs])
+    for i in remat_src_idxs:
+      cur = remat_rep.get(ra:=c.src[i], ra)
+      extra = tuple(s for s in after_sources if s not in cur.src[2:] and ra not in s.backward_slice)
+      if extra: remat_rep[ra] = cur.replace(src=cur.src + extra)
 
   if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
   return tsink
@@ -589,6 +606,9 @@ def get_kernel_graph(sink:UOp) -> UOp:
   # bufferize -> store
   tsink = graph_rewrite(tsink, pm_add_buffers+pm_add_range_tags, ctx=itertools.count(tsink.lunique_start), bottom_up=True, name="bufferize to store")
   tsink = graph_rewrite(tsink, split_kernels, bottom_up=True, name="split kernels")
+
+  # ensure >1 remats are never alive at once
+  tsink = add_remat_dependencies(tsink)
 
   # WAR deps: if kernel U reads buffer S, and S is also written by another kernel, S's write must wait for U to finish
   afters = [u for u in tsink.toposort() if u.op is Ops.AFTER]

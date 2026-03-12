@@ -1,6 +1,6 @@
-import time, inspect
+import time, inspect, heapq
 from typing import cast
-from collections import deque
+from itertools import count
 from tinygrad.uop.ops import UOp, Ops, buffers, UOpMetaClass, track_rewrites, graph_rewrite, gate_kernel_sink, KernelInfo
 from tinygrad.uop.spec import type_verify, tensor_spec
 from tinygrad.device import Buffer, MultiBuffer
@@ -45,10 +45,15 @@ def create_schedule(sched_sink:UOp) -> UOp:
             raise RuntimeError(f"input to kernel must be AFTER, BUFFER, PARAM, MSELECT, MSTACK, or BIND, not {s.op}")
 
   with cpu_profile(TracingKey("linearize schedule")):
-    queue: deque[UOp] = deque(k for k,v in in_degree.items() if v == 0)
+    def is_remat(k: UOp) -> bool: return (c:=k.src[0] if k.op is Ops.END else k).op is Ops.CALL and c.arg.rematerialize
+
+    # prioritize non_remat
+    push_count = count()
+    queue: list[tuple[int, int, UOp]] = [(int(is_remat(k)), next(push_count), k) for k,v in in_degree.items() if v == 0]
+
     linearized: list[UOp] = []
     while len(queue):
-      rk = queue.popleft()
+      _, _, rk = heapq.heappop(queue)
       if rk.op is Ops.LINEAR:
         linearized.extend(rk.src)
       else:
@@ -58,7 +63,7 @@ def create_schedule(sched_sink:UOp) -> UOp:
         linearized.append(k.src[0].call(*buf_uops, metadata=k.arg.metadata))
       for x in children.get(rk, []):
         in_degree[x] -= 1
-        if in_degree[x] == 0: queue.append(x)
+        if in_degree[x] == 0: heapq.heappush(queue, (int(is_remat(x)), next(push_count), x))
   return UOp(Ops.LINEAR, src=tuple(linearized))
 
 def linear_to_schedule(linear:UOp) -> list[ExecItem]:
