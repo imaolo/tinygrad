@@ -553,7 +553,7 @@ def do_remat(tsink: UOp) -> UOp:
     for i, s in enumerate(c.src):
       if is_remat(s): after_consumers_pos.setdefault(s, []).append((c, i))
 
-  # replace consumer sources
+  # each remat producer gets a fresh buffer
   lunique_iter = itertools.count(tsink.lunique_start)
   remat_rep: dict[UOp, UOp] = {}
   for after, c_pos in after_consumers_pos.items():
@@ -568,7 +568,7 @@ def do_remat(tsink: UOp) -> UOp:
   if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
   return tsink
 
-def add_remat_dependencies(tsink: UOp) -> UOp:
+def add_remat_deps(tsink: UOp) -> UOp:
   if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
 
   remat_rep: dict[UOp, UOp] = {}
@@ -590,7 +590,7 @@ def get_kernel_graph(sink:UOp) -> UOp:
   if OPENPILOT_HACKS: tsink = graph_rewrite(tsink, pm_fold_moved_assign, ctx={}, name="fold moved assigns")
   tsink = graph_rewrite(tsink, pm_syntactic_sugar+pm_mops+earliest_rewrites, bottom_up=True, name="earliest rewrites")
 
-  # create buffers for each rematerialize call
+  # each rematerialize call gets its own buffer
   tsink = do_remat(tsink)
 
   # convert movement ops to ranges
@@ -605,8 +605,8 @@ def get_kernel_graph(sink:UOp) -> UOp:
   tsink = graph_rewrite(tsink, pm_add_buffers+pm_add_range_tags, ctx=itertools.count(tsink.lunique_start), bottom_up=True, name="bufferize to store")
   tsink = graph_rewrite(tsink, split_kernels, bottom_up=True, name="split kernels")
 
-  # ensure >1 remats are never alive at once
-  tsink = add_remat_dependencies(tsink)
+  # remats are the last of its siblings to execute, needed for buffer liveness
+  tsink = add_remat_deps(tsink)
 
   # WAR deps: if kernel U reads buffer S, and S is also written by another kernel, S's write must wait for U to finish
   afters = [u for u in tsink.toposort() if u.op is Ops.AFTER]
