@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, math, time
 import numpy as np
-from tinygrad import Tensor, nn, fetch, Device, TinyJit, GlobalCounters, function
+from tinygrad import Tensor, nn, fetch, Device, TinyJit, GlobalCounters
 from dataclasses import dataclass
 
 @dataclass
@@ -145,10 +145,9 @@ if __name__ == "__main__":
     model.load_pretrained()
 
   GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
+  sharded_params = []
+  fsdp_links: list[tuple[Tensor, Tensor]] = []
   if args.fsdp:
-    @function(rematerialize=True)
-    def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
-    sharded_params = []
     for param in dict.fromkeys(nn.state.get_parameters(model)):
       if param.requires_grad is False:
         param.to_(GPUS)
@@ -156,8 +155,8 @@ if __name__ == "__main__":
       sharded_param = param.reshape(-1).shard(GPUS, 0).reshape(param.shape)
       sharded_param.requires_grad_(True)
       sharded_params.append(sharded_param)
-      ag = allgather_fxn(sharded_param)
-      param.replace(ag)
+      param.replace(sharded_param.fsdp())
+      fsdp_links.append((param, sharded_param))
       param.requires_grad_(True)
   elif GPUS is not None:
     for x in dict.fromkeys(nn.state.get_parameters(model)):
@@ -196,9 +195,7 @@ if __name__ == "__main__":
   data_iter = iter(get_batch())
   x, y = next(data_iter) # we'll overfit this batch below
   if args.fsdp:
-    allgathered_params = [p for p in dict.fromkeys(nn.state.get_parameters(model)) if p.requires_grad is not False]
     optimizer = nn.optim.AdamW(sharded_params, lr=1e-4, weight_decay=0)
-    optimizer.setup_fsdp(allgathered_params)
   else:
     optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
 
@@ -216,6 +213,11 @@ if __name__ == "__main__":
     loss.backward()
     # TODO doing these separately is required for FSDP
     optimizer.step()
+    if args.fsdp:
+      # Temporary relink: keep gathered params wired to latest shard UOps and drop stale full grads.
+      for ag_param, sh_param in fsdp_links:
+        ag_param.grad = None
+        ag_param.uop = ag_param.uop.replace(src=(sh_param.uop,))
     return loss.realize()
 
   for i in range(args.num_iterations):
@@ -241,4 +243,3 @@ if __name__ == "__main__":
     top_k = 40
     y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
     print(decode(y[0].tolist()))
-
