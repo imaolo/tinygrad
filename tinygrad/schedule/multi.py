@@ -126,15 +126,16 @@ def param_to_multi(p:UOp):
   return UOp.param(p.arg, p.dtype, p.shard_shape, p._device).multi(p.axis)
 
 
-def handle_fsdp(ctx: itertools.count, root: UOp) -> UOp:
-  call = root.param_like(0).allgather().call(root, name='fsdp', rematerialize=True)
-  out = UOp(Ops.BUFFER, call.dtype, (UOp(Ops.LUNIQUE, arg=next(ctx)), UOp(Ops.DEVICE, arg=call.device)), call.shard_size)
-  fxn = out.reshape(call.max_shard_shape).param_like(1).assign(call.src[0]).sink()
-  return out.after(call.replace(src=(fxn, root, out), dtype=dtypes.void, tag=None))
+def handle_fsdp(ctx: itertools.count, buf: UOp) -> UOp:
+  output = UOp(Ops.BUFFER, buf.dtype, (UOp(Ops.LUNIQUE, arg=next(ctx)), UOp(Ops.DEVICE, arg=buf.device)), buf.size).reshape(buf.shape)
+  to = output.param_like(0)
+  src = buf.param_like(1)
+  fxn = to.assign(src.allgather()).sink()
+  return output.after(fxn.call(output, buf.contiguous(), name="fsdp", rematerialize=True))
 
 # NOTE: this is the same pattern as Ops.UNROLL
 multi_pm = PatternMatcher([
-  (UPat(Ops.FSDP, src=UPat(name='root')), handle_fsdp),
+  (UPat(Ops.FSDP, src=UPat(name='buf')), handle_fsdp),
   (UPat(Ops.PARAM, name="p"), param_to_multi),
   (UPat(GroupOp.ALU, name="root", custom_early_reject=set([Ops.MULTI])), alu_multi),
   (UPat(Ops.REDUCE_AXIS, src=(UPat(Ops.MULTI, name="multi"), ), name="root"), reduce_multi),
