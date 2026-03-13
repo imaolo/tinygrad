@@ -48,13 +48,7 @@ def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp, model_cls=_M
   model = model_cls(in_dim, out_dim, n_dim, n_layers)
   if use_fsdp:
     for param in state.get_parameters(model):
-      if param.requires_grad is False:
-        param.to_(devices)
-        continue
-      sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
-      sharded_param.requires_grad_(True)
-      param.replace(sharded_param.fsdp())
-      param.requires_grad_(True)
+      param.replace(param.fsdp(devices))
   else:
     for param in state.get_parameters(model):
       param.to_(devices)

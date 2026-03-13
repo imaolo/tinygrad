@@ -451,8 +451,9 @@ class Tensor(OpMixin):
   def allgather(self) -> Tensor:
     return Tensor(self.uop.allgather(), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
 
-  def fsdp(self) -> Tensor:
-    return Tensor(self.uop.fsdp(), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
+  def fsdp(self, devices:tuple[str]) -> Tensor:
+    sharded_param = self.reshape(-1).shard(devices, 0).reshape(self.shape)
+    return Tensor(sharded_param.uop.fsdp(), device=devices, dtype=self.dtype, requires_grad=self.requires_grad)
 
   CHUNK_SIZE = 2**20
   def fs_load(self, size:int) -> Tensor:
