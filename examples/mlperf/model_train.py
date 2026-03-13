@@ -1356,20 +1356,9 @@ def train_llama3():
   FSDP = getenv("FSDP", 0)
   if FSDP:
     fsdp_device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
-    @function(rematerialize=True)
-    def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
-
-    sharded_params, allgathered_params = [], []
-    for param in dict.fromkeys(get_parameters(model)):
-      sharded_param = param.reshape(-1).shard(fsdp_device, 0).reshape(param.shape)
-      sharded_param.requires_grad_(True)
-      sharded_params.append(sharded_param)
-      ag = allgather_fxn(sharded_param)
-      allgathered_params.append(ag)
-      param.replace(ag)
-      param.requires_grad_(True)
+    for param in get_parameters(model):
+      param.fsdp_(fsdp_device)
     vocab_mask.shard_(fsdp_device, axis=None)
-
   if not FSDP and (DP := getenv("DP", 1)) > 1:
     device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
     for v in get_parameters(model):
