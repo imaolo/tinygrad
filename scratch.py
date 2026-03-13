@@ -40,7 +40,7 @@ def build_model(mode:Mode):
     return model, optim.SGD(state.get_parameters(model), LR)
 
   if mode == "newfsdp":
-    for p in state.get_parameters(model): p.replace(p.fsdp(DEVICES))
+    for p in state.get_parameters(model): p.fsdp_(DEVICES)
     return model, optim.SGD(state.get_parameters(model), LR)
 
   # original FSDP path: allgather function + optimizer setup_fsdp

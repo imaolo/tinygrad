@@ -147,7 +147,7 @@ if __name__ == "__main__":
   GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
   if args.fsdp:
     for param in dict.fromkeys(nn.state.get_parameters(model)):
-      param.replace(param.fsdp(GPUS))
+      param.fsdp_(GPUS)
   elif GPUS is not None:
     for x in dict.fromkeys(nn.state.get_parameters(model)):
       x.to_(GPUS)

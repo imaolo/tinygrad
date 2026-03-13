@@ -48,7 +48,7 @@ def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp, model_cls=_M
   model = model_cls(in_dim, out_dim, n_dim, n_layers)
   if use_fsdp:
     for param in state.get_parameters(model):
-      param.replace(param.fsdp(devices))
+      param.fsdp_(devices)
   else:
     for param in state.get_parameters(model):
       param.to_(devices)
