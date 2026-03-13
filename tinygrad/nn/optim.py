@@ -28,21 +28,6 @@ class Optimizer:
     self.lr = Tensor(lr if getenv("CONST_LR") else [lr], requires_grad=False, device=self.device,
                      dtype=least_upper_dtype(dtypes.default_float, dtypes.float32))
     if self.fused: self.pos_params = list(itertools.accumulate(self.params, lambda x,y: x+y.numel(), initial=0))
-    self._fsdp_grad_sources: list[Tensor]|None = None
-
-  def setup_fsdp(self, allgathered_params: list[Tensor]):
-    """Set up FSDP: self.params should be sharded params, allgathered_params are where backward puts grads."""
-    assert len(allgathered_params) == len(self.params)
-    self._fsdp_grad_sources = allgathered_params
-
-  def _reduce_scatter_grads(self):
-    """Reduce-scatter grads from allgathered params onto sharded params."""
-    for sh_param, ag_param in zip(self.params, self._fsdp_grad_sources):
-      g = unwrap(ag_param.grad)
-      flat_g = g.reshape(-1)
-      n_devices = len(g.device)
-      rs_uop = flat_g.uop.allreduce(Ops.ADD, g.device)._shard(0).multi(0)
-      sh_param.grad = (Tensor(rs_uop, device=sh_param.device, dtype=g.dtype) / n_devices).reshape(sh_param.shape)
 
   def _new_optim_param(self) -> list[Tensor]:
     if self.fused: return [Tensor.zeros(self.pos_params[-1], dtype=self.param_dtype, device=self.device, requires_grad=False)]
@@ -55,8 +40,6 @@ class Optimizer:
     """
     for param in self.params: param.grad = None
     for param in self.shard_to_fsdp.values(): param.grad = None
-    if self._fsdp_grad_sources is not None:
-      for param in self._fsdp_grad_sources: param.grad = None
 
   def post_step(self):
     for sp, fp in self.shard_to_fsdp.items():
@@ -65,11 +48,6 @@ class Optimizer:
   def step(self):
     Tensor.realize(*self.schedule_step())
     self.post_step()
-    if self._fsdp_grad_sources is not None:
-      for sp, ag in zip(self.params, self._fsdp_grad_sources):
-        ag.uop = ag.uop.replace(src=(ag.uop.src[0], sp.uop))
-        
-
 
   def schedule_step(self) -> list[Tensor]:
     """
@@ -78,8 +56,6 @@ class Optimizer:
     if not Tensor.training: raise RuntimeError(
             f"""Tensor.training={Tensor.training}, Tensor.training must be enabled to use the optimizer.
                 - help: Consider setting Tensor.training=True before calling Optimizer.step().""")
-    # FSDP: reduce-scatter grads from allgathered params onto sharded params before update
-    if self._fsdp_grad_sources is not None: self._reduce_scatter_grads()
     if self.fused:
       # optimizer fusion just concatenates all the buffers, runs the _step, then splits them back up
       # NOTE: contiguous is for speed
