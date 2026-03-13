@@ -146,10 +146,10 @@ if __name__ == "__main__":
 
   GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
   if args.fsdp:
-    for param in dict.fromkeys(nn.state.get_parameters(model)):
+    for param in nn.state.get_parameters(model):
       param.fsdp_(GPUS)
   elif GPUS is not None:
-    for x in dict.fromkeys(nn.state.get_parameters(model)):
+    for x in nn.state.get_parameters(model):
       x.to_(GPUS)
 
   # init the tokenizer
