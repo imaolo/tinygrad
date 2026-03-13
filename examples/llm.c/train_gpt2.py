@@ -147,13 +147,7 @@ if __name__ == "__main__":
   GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
   if args.fsdp:
     for param in dict.fromkeys(nn.state.get_parameters(model)):
-      if param.requires_grad is False:
-        param.to_(GPUS)
-        continue
-      sharded_param = param.reshape(-1).shard(GPUS, 0).reshape(param.shape)
-      sharded_param.requires_grad_(True)
-      param.replace(sharded_param.fsdp())
-      param.requires_grad_(True)
+      param.replace(param.fsdp(GPUS))
   elif GPUS is not None:
     for x in dict.fromkeys(nn.state.get_parameters(model)):
       x.to_(GPUS)
