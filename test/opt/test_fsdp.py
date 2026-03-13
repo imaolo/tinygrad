@@ -4,6 +4,7 @@ from tinygrad import Tensor, Device, TinyJit, function, GlobalCounters
 from tinygrad.nn import Linear, optim, state
 from tinygrad.helpers import ProfilePointEvent, ProfileEvent, Context, CI
 from tinygrad.device import Buffer
+from tinygrad.uop.ops import Ops
 from typing import Callable
 
 def not_support_multi_device():
@@ -72,6 +73,21 @@ def _get_optimizer(model, sharded_params, lr=0.001, opt_fn=None):
   else:
     opt = opt_fn(state.get_parameters(model), lr)
   return opt
+
+def _get_model_fsdp_op(in_dim, out_dim, n_dim, n_layers, devices, model_cls=_Model):
+  """Returns (model, sharded_params) for the public FSDP-op optimizer path."""
+  model = model_cls(in_dim, out_dim, n_dim, n_layers)
+  sharded_params = []
+  for param in state.get_parameters(model):
+    if param.requires_grad is False:
+      param.to_(devices)
+      continue
+    sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
+    sharded_param.requires_grad_(True)
+    sharded_params.append(sharded_param)
+    param.replace(sharded_param.fsdp())
+    param.requires_grad_(True)
+  return model, sharded_params
 
 def _make_dataset(dataset_size, batch_size, in_dim, devices, out_dim=1):
   X = Tensor.rand(dataset_size, in_dim).realize()
@@ -353,6 +369,45 @@ class TestFSDPWithMask(TestFSDP):
     n_trainable = sum(1 for p in state.get_parameters(model) if p.requires_grad is not False)
     self.assertEqual(len(opt.params), n_trainable,
       f"optimizer has {len(opt.params)} params but model has {n_trainable} trainable params")
+
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPOpOptimizerAPI(unittest.TestCase):
+  in_dim, out_dim, n_dim, n_layers = 8, 8, 64, 5
+  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr))
+
+  @needs_multi_gpu
+  def setUp(self):
+    Tensor.manual_seed(0)
+    self.devices = _devices()
+
+  def test_public_fsdp_params_optimizer_matches_nonfsdp_initial_loss(self):
+    losses = {}
+    for use_fsdp in [False, True]:
+      Tensor.manual_seed(0)
+      if use_fsdp:
+        model, _ = _get_model_fsdp_op(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices)
+        opt = self._opt_fn(state.get_parameters(model), 0.001)
+      else:
+        model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=False)
+        opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+      X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
+      losses["fsdp" if use_fsdp else "nonfsdp"] = _step(X[0], Y[0], model, opt, _loss_fn).item()
+    self.assertAlmostEqual(losses["fsdp"], losses["nonfsdp"], places=4,
+                           msg=f"initial loss mismatch: fsdp={losses['fsdp']}, nonfsdp={losses['nonfsdp']}")
+
+  def test_public_fsdp_params_optimizer_updates_shards_and_preserves_wrappers(self):
+    Tensor.manual_seed(0)
+    model, _ = _get_model_fsdp_op(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices)
+    opt = self._opt_fn(state.get_parameters(model), 0.001)
+    before = [p.numpy().copy() for p in opt.params]
+    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
+    _step(X[0], Y[0], model, opt, _loss_fn)
+    after = [p.numpy() for p in opt.params]
+    for i, (b, a) in enumerate(zip(before, after)):
+      self.assertFalse((b == a).all(), f"sharded param {i} did not change after optimizer step")
+    for p in state.get_parameters(model):
+      if p.requires_grad is False: continue
+      self.assertEqual(p.uop.op, Ops.FSDP, f"trainable param lost FSDP wrapper: {p.uop.op}")
 
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDPJit(unittest.TestCase):

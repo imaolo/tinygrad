@@ -33,12 +33,11 @@ def make_dataset(dataset_size:int, batch_size:int, in_dim:int, out_dim:int, devi
 
 def build_model(mode:Mode):
   model = Model(IN_DIM, OUT_DIM, H_DIM, N_LAYERS)
-  fsdp_links: list[tuple[Tensor, Tensor]] = []
   sharded_params: list[Tensor] = []
 
   if mode == "nonfsdp":
     for p in state.get_parameters(model): p.to_(DEVICES)
-    return model, optim.SGD(state.get_parameters(model), LR), fsdp_links
+    return model, optim.SGD(state.get_parameters(model), LR)
 
   if mode == "newfsdp":
     for p in state.get_parameters(model):
@@ -49,9 +48,7 @@ def build_model(mode:Mode):
       sp.requires_grad_(True)
       p.replace(sp.fsdp())
       p.requires_grad_(True)
-      sharded_params.append(sp)
-      fsdp_links.append((p, sp))
-    return model, optim.SGD(sharded_params, LR), fsdp_links
+    return model, optim.SGD(state.get_parameters(model), LR)
 
   # original FSDP path: allgather function + optimizer setup_fsdp
   allgathered_params: list[Tensor] = []
@@ -67,33 +64,27 @@ def build_model(mode:Mode):
     allgathered_params.append(p)
   opt = optim.SGD(sharded_params, LR)
   opt.setup_fsdp(allgathered_params)
-  return model, opt, fsdp_links
+  return model, opt
 
-def do_step(x:Tensor, y:Tensor, model:Model, opt:optim.Optimizer, mode:Mode, fsdp_links:list[tuple[Tensor, Tensor]]):
+def do_step(x:Tensor, y:Tensor, model:Model, opt:optim.Optimizer):
   opt.zero_grad()
   out = model(x)
   loss = loss_fn(out, y)
   loss.backward()
   opt.step()
-  if mode == "newfsdp":
-    # Temporary workaround until core FSDP-preservation lands:
-    # keep model params pointing at freshly-updated sharded params.
-    for p, sp in fsdp_links:
-      p.grad = None
-      p.replace(sp.fsdp())
   return loss.realize()
 
 @Tensor.train()
-def step(x:Tensor, y:Tensor, model:Model, opt:optim.Optimizer, mode:Mode, fsdp_links:list[tuple[Tensor, Tensor]]):
-  return do_step(x, y, model, opt, mode, fsdp_links)
+def step(x:Tensor, y:Tensor, model:Model, opt:optim.Optimizer):
+  return do_step(x, y, model, opt)
 
 def train(mode:Mode, n_steps:int=N_STEPS):
   Tensor.manual_seed(0)
-  model, opt, fsdp_links = build_model(mode)
+  model, opt = build_model(mode)
   X, Y = make_dataset(DATASET_SIZE, BATCH_SIZE, IN_DIM, OUT_DIM, DEVICES)
   losses: list[float] = []
   for i in range(n_steps):
-    loss = step(X[i % len(X)], Y[i % len(Y)], model, opt, mode, fsdp_links)
+    loss = step(X[i % len(X)], Y[i % len(Y)], model, opt)
     losses.append(loss.item())
   return losses
 
@@ -114,25 +105,25 @@ def peak_memory(events:list[ProfileEvent], device:str) -> int:
 
 def profile_one_step(mode:Mode) -> dict[str, int]:
   Tensor.manual_seed(0)
-  model, opt, fsdp_links = build_model(mode)
+  model, opt = build_model(mode)
   X, Y = make_dataset(DATASET_SIZE, BATCH_SIZE, IN_DIM, OUT_DIM, DEVICES)
   x, y = X[0].realize(), Y[0].realize()
   Buffer.profile_events.clear()
   with Context(PROFILE=1):
-    step(x, y, model, opt, mode, fsdp_links)
+    step(x, y, model, opt)
   events = list(Buffer.profile_events)
   return {dev: peak_memory(events, dev) for dev in CANON_DEVICES}
 
 def profile_one_step_jit(mode:Mode, warmup:int=2) -> dict[str, int]:
   Tensor.manual_seed(0)
-  model, opt, fsdp_links = build_model(mode)
+  model, opt = build_model(mode)
   X, Y = make_dataset(DATASET_SIZE, BATCH_SIZE, IN_DIM, OUT_DIM, DEVICES)
   x, y = X[0].realize(), Y[0].realize()
 
   @TinyJit
   @Tensor.train()
   def jit_step(x:Tensor, y:Tensor):
-    return do_step(x, y, model, opt, mode, fsdp_links)
+    return do_step(x, y, model, opt)
 
   for _ in range(warmup):
     jit_step(x.contiguous(), y.contiguous())

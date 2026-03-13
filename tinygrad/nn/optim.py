@@ -1,5 +1,5 @@
 # sorted in order of increasing complexity
-import itertools
+import itertools, weakref
 from tinygrad.helpers import dedup, flatten, getenv, unwrap, FUSE_OPTIM
 from tinygrad.tensor import Tensor
 from tinygrad.dtype import dtypes, least_upper_dtype, to_dtype
@@ -14,7 +14,11 @@ class Optimizer:
     for x in params:
       if x.requires_grad is None: x.requires_grad_(True)
 
-    self.params: list[Tensor] = dedup([x for x in params if x.requires_grad])
+    trainable_params = dedup([x for x in params if x.requires_grad])
+    self.params: list[Tensor] = [Tensor(p.uop.src[0], dtype=p.uop.src[0].dtype, device=p.uop.src[0].device, requires_grad=True)
+                                 if p.uop.op is Ops.FSDP else p for p in trainable_params]
+    self.shard_to_fsdp = {sp: p for p, sp in zip(trainable_params, self.params) if p.uop.op is Ops.FSDP}
+
     assert len(self.params) != 0, "optimizer must have at least one param"
     self.buffers: list[Tensor] = dedup([x for x in params if not x.requires_grad])   # buffers are still realized
     self.device = device or self.params[0].device
@@ -50,11 +54,17 @@ class Optimizer:
     Zeroes the gradients of all the parameters.
     """
     for param in self.params: param.grad = None
+    for param in self.shard_to_fsdp.values(): param.grad = None
     if self._fsdp_grad_sources is not None:
       for param in self._fsdp_grad_sources: param.grad = None
 
+  def post_step(self):
+    for sp, fp in self.shard_to_fsdp.items():
+      fp.uop = sp.uop.fsdp()
+
   def step(self):
     Tensor.realize(*self.schedule_step())
+    self.post_step()
     if self._fsdp_grad_sources is not None:
       for sp, ag in zip(self.params, self._fsdp_grad_sources):
         ag.uop = ag.uop.replace(src=(ag.uop.src[0], sp.uop))
@@ -93,6 +103,7 @@ class OptimizerGroup(Optimizer):
     self.params, self.buffers = flatten([o.params for o in self.optimizers]), flatten([o.buffers for o in self.optimizers])
   def __getitem__(self, i): return self.optimizers[i]
   def zero_grad(self): [o.zero_grad() for o in self.optimizers]
+  def post_step(self): [o.post_step() for o in self.optimizers]
   def schedule_step(self) -> list[Tensor]: return [x for o in self.optimizers for x in o.schedule_step()]
 
 # LARS is essentially just trust ratio to SGD so if we just set the trust coeff 0.0 it's just standard SGD.

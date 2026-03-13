@@ -145,8 +145,6 @@ if __name__ == "__main__":
     model.load_pretrained()
 
   GPUS = tuple(f'{Device.DEFAULT}:{i}' for i in range(args.gpus)) if args.gpus > 1 else None
-  sharded_params = []
-  fsdp_links: list[tuple[Tensor, Tensor]] = []
   if args.fsdp:
     for param in dict.fromkeys(nn.state.get_parameters(model)):
       if param.requires_grad is False:
@@ -154,9 +152,7 @@ if __name__ == "__main__":
         continue
       sharded_param = param.reshape(-1).shard(GPUS, 0).reshape(param.shape)
       sharded_param.requires_grad_(True)
-      sharded_params.append(sharded_param)
       param.replace(sharded_param.fsdp())
-      fsdp_links.append((param, sharded_param))
       param.requires_grad_(True)
   elif GPUS is not None:
     for x in dict.fromkeys(nn.state.get_parameters(model)):
@@ -195,7 +191,7 @@ if __name__ == "__main__":
   data_iter = iter(get_batch())
   x, y = next(data_iter) # we'll overfit this batch below
   if args.fsdp:
-    optimizer = nn.optim.AdamW(sharded_params, lr=1e-4, weight_decay=0)
+    optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
   else:
     optimizer = nn.optim.AdamW(nn.state.get_parameters(model), lr=1e-4, weight_decay=0)
 
@@ -211,13 +207,7 @@ if __name__ == "__main__":
     _, loss = model(x, y)
     optimizer.zero_grad()
     loss.backward()
-    # TODO doing these separately is required for FSDP
     optimizer.step()
-    if args.fsdp:
-      # Temporary relink: keep gathered params wired to latest shard UOps and drop stale full grads.
-      for ag_param, sh_param in fsdp_links:
-        ag_param.grad = None
-        ag_param.uop = ag_param.uop.replace(src=(sh_param.uop,))
     return loss.realize()
 
   for i in range(args.num_iterations):
