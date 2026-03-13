@@ -46,48 +46,23 @@ class _ModelWithMask(_Model):
 def _get_model(in_dim, out_dim, n_dim, n_layers, devices, use_fsdp, model_cls=_Model):
   """Returns (model, sharded_params_or_None)."""
   model = model_cls(in_dim, out_dim, n_dim, n_layers)
-  sharded_params = None
   if use_fsdp:
-    sharded_params = []
     for param in state.get_parameters(model):
       if param.requires_grad is False:
         param.to_(devices)
         continue
       sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
       sharded_param.requires_grad_(True)
-      sharded_params.append(sharded_param)
-      ag = allgather_fxn(sharded_param)
-      param.replace(ag)
+      param.replace(sharded_param.fsdp())
       param.requires_grad_(True)
   else:
     for param in state.get_parameters(model):
       param.to_(devices)
-  return model, sharded_params
+  return model
 
-def _get_optimizer(model, sharded_params, lr=0.001, opt_fn=None):
+def _get_optimizer(model, lr=0.001, opt_fn=None):
   if opt_fn is None: opt_fn = lambda params, lr: optim.SGD(params, lr)
-  if sharded_params is not None:
-    allgathered_params = [p for p in state.get_parameters(model) if p.requires_grad is not False]
-    opt = opt_fn(sharded_params, lr)
-    opt.setup_fsdp(allgathered_params)
-  else:
-    opt = opt_fn(state.get_parameters(model), lr)
-  return opt
-
-def _get_model_fsdp_op(in_dim, out_dim, n_dim, n_layers, devices, model_cls=_Model):
-  """Returns (model, sharded_params) for the public FSDP-op optimizer path."""
-  model = model_cls(in_dim, out_dim, n_dim, n_layers)
-  sharded_params = []
-  for param in state.get_parameters(model):
-    if param.requires_grad is False:
-      param.to_(devices)
-      continue
-    sharded_param = param.reshape(-1).shard(devices, 0).reshape(param.shape)
-    sharded_param.requires_grad_(True)
-    sharded_params.append(sharded_param)
-    param.replace(sharded_param.fsdp())
-    param.requires_grad_(True)
-  return model, sharded_params
+  return opt_fn(state.get_parameters(model), lr)
 
 def _make_dataset(dataset_size, batch_size, in_dim, devices, out_dim=1):
   X = Tensor.rand(dataset_size, in_dim).realize()
@@ -177,8 +152,8 @@ class TestFSDP(unittest.TestCase):
     losses = {}
     for use_fsdp in [False, True]:
       Tensor.manual_seed(0)
-      model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-      opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+      model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+      opt = _get_optimizer(model, opt_fn=self._opt_fn)
       X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
       x, y = X[0], Y[0]
       loss = _step(x, y, model, opt, _loss_fn)
@@ -189,8 +164,8 @@ class TestFSDP(unittest.TestCase):
   def _train_n_steps(self, use_fsdp, n_steps=8, lr=0.001):
     """Train for n steps on different batches, return list of losses."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-    opt = _get_optimizer(model, sharded, lr=lr, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, lr=lr, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     losses = []
     for i in range(n_steps):
@@ -220,8 +195,8 @@ class TestFSDP(unittest.TestCase):
   def _profile_one_step(self, use_fsdp: bool) -> list[ProfileEvent]:
     """Run one training step with profiling, return Buffer.profile_events."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0].realize(), Y[0].realize()
     Buffer.profile_events.clear()
@@ -282,21 +257,21 @@ class TestFSDP(unittest.TestCase):
   def test_fsdp_params_update_across_steps(self):
     """Sharded params should change after each optimizer step."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
-    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     # snapshot sharded param values before step
-    before = [p.numpy().copy() for p in sharded]
+    before = [p.numpy().copy() for p in state.get_parameters(model)]
     _step(X[0], Y[0], model, opt, _loss_fn)
-    after = [p.numpy() for p in sharded]
+    after = [p.numpy() for p in state.get_parameters(model)]
     for i, (b, a) in enumerate(zip(before, after)):
       self.assertFalse((b == a).all(), f"sharded param {i} did not change after optimizer step")
 
   def test_fsdp_loss_decreases_same_data(self):
     """Training on the same batch repeatedly must decrease loss (forward uses updated params)."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, 32, 3, self.devices, use_fsdp=True)
-    opt = _get_optimizer(model, sharded, lr=0.05, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, 32, 3, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, lr=0.05, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0], Y[0]
     losses = []
@@ -309,8 +284,8 @@ class TestFSDP(unittest.TestCase):
   def test_fsdp_multi_step_loss_keeps_changing(self):
     """Loss should change across multiple steps on different data (model uses updated params)."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
-    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=True)
+    opt = _get_optimizer(model, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0], Y[0]
     losses = []
@@ -352,8 +327,8 @@ class TestFSDPWithMask(TestFSDP):
 
   def _profile_one_step(self, use_fsdp: bool) -> list[ProfileEvent]:
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp, model_cls=_ModelWithMask)
-    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp, model_cls=_ModelWithMask)
+    opt = _get_optimizer(model, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
     x, y = X[0].realize(), Y[0].realize()
     Buffer.profile_events.clear()
@@ -364,51 +339,11 @@ class TestFSDPWithMask(TestFSDP):
   def test_fsdp_nontrainable_not_in_optimizer(self):
     """Non-trainable tensors (requires_grad=False) must not appear in optimizer params."""
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, True, model_cls=_ModelWithMask)
-    opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, True, model_cls=_ModelWithMask)
+    opt = _get_optimizer(model, opt_fn=self._opt_fn)
     n_trainable = sum(1 for p in state.get_parameters(model) if p.requires_grad is not False)
     self.assertEqual(len(opt.params), n_trainable,
       f"optimizer has {len(opt.params)} params but model has {n_trainable} trainable params")
-
-@unittest.skipIf(not_support_multi_device(), "no multi")
-class TestFSDPOpOptimizerAPI(unittest.TestCase):
-  in_dim, out_dim, n_dim, n_layers = 8, 8, 64, 5
-  _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr))
-
-  @needs_multi_gpu
-  def setUp(self):
-    Tensor.manual_seed(0)
-    self.devices = _devices()
-
-  def test_public_fsdp_params_optimizer_matches_nonfsdp_initial_loss(self):
-    losses = {}
-    for use_fsdp in [False, True]:
-      Tensor.manual_seed(0)
-      if use_fsdp:
-        model, _ = _get_model_fsdp_op(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices)
-        opt = self._opt_fn(state.get_parameters(model), 0.001)
-      else:
-        model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp=False)
-        opt = _get_optimizer(model, sharded, opt_fn=self._opt_fn)
-      X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
-      losses["fsdp" if use_fsdp else "nonfsdp"] = _step(X[0], Y[0], model, opt, _loss_fn).item()
-    self.assertAlmostEqual(losses["fsdp"], losses["nonfsdp"], places=4,
-                           msg=f"initial loss mismatch: fsdp={losses['fsdp']}, nonfsdp={losses['nonfsdp']}")
-
-  def test_public_fsdp_params_optimizer_updates_shards_and_preserves_wrappers(self):
-    Tensor.manual_seed(0)
-    model, _ = _get_model_fsdp_op(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices)
-    opt = self._opt_fn(state.get_parameters(model), 0.001)
-    before = [p.numpy().copy() for p in opt.params]
-    X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
-    _step(X[0], Y[0], model, opt, _loss_fn)
-    after = [p.numpy() for p in opt.params]
-    for i, (b, a) in enumerate(zip(before, after)):
-      self.assertFalse((b == a).all(), f"sharded param {i} did not change after optimizer step")
-    for p in state.get_parameters(model):
-      if p.requires_grad is False: continue
-      self.assertEqual(p.uop.op, Ops.FSDP, f"trainable param lost FSDP wrapper: {p.uop.op}")
-
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDPJit(unittest.TestCase):
   """Test FSDP with JIT enabled, verifying memory savings are preserved."""
@@ -422,8 +357,8 @@ class TestFSDPJit(unittest.TestCase):
 
   def _train_jit(self, use_fsdp, n_steps=4, lr=0.001):
     Tensor.manual_seed(0)
-    model, sharded = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
-    opt = _get_optimizer(model, sharded, lr=lr, opt_fn=self._opt_fn)
+    model = _get_model(self.in_dim, self.out_dim, self.n_dim, self.n_layers, self.devices, use_fsdp)
+    opt = _get_optimizer(model, lr=lr, opt_fn=self._opt_fn)
     X, Y = _make_dataset(64, 4, self.in_dim, self.devices, self.out_dim)
 
     @TinyJit
