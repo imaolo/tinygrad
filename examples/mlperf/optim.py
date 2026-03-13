@@ -30,10 +30,7 @@ class GradAccClipAdamW(Optimizer):
 
     Tensor.realize(*to_realize)
 
-    # FSDP: update allgathered params to point to updated sharded params
-    if self._fsdp_grad_sources is not None:
-      for sp, ag in zip(self.params, self._fsdp_grad_sources):
-        ag.uop = ag.uop.replace(src=(ag.uop.src[0], sp.uop))
+    self.post_step()
 
     return extra[-1]
 
