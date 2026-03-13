@@ -40,14 +40,7 @@ def build_model(mode:Mode):
     return model, optim.SGD(state.get_parameters(model), LR)
 
   if mode == "newfsdp":
-    for p in state.get_parameters(model):
-      if p.requires_grad is False:
-        p.to_(DEVICES)
-        continue
-      sp = p.reshape(-1).shard(DEVICES, 0).reshape(p.shape)
-      sp.requires_grad_(True)
-      p.replace(sp.fsdp())
-      p.requires_grad_(True)
+    for p in state.get_parameters(model): p.replace(p.fsdp(DEVICES))
     return model, optim.SGD(state.get_parameters(model), LR)
 
   # original FSDP path: allgather function + optimizer setup_fsdp
