@@ -1,6 +1,5 @@
-import time, inspect, heapq
+import time, inspect, heapq, itertools
 from typing import cast
-from itertools import count
 from tinygrad.uop.ops import UOp, Ops, buffers, UOpMetaClass, track_rewrites, graph_rewrite, gate_kernel_sink, KernelInfo
 from tinygrad.uop.spec import type_verify, tensor_spec
 from tinygrad.device import Buffer, MultiBuffer
@@ -48,7 +47,7 @@ def create_schedule(sched_sink:UOp) -> UOp:
     def is_remat(k: UOp) -> bool: return (c:=k.src[0] if k.op is Ops.END else k).op is Ops.CALL and c.arg.rematerialize
 
     # prioritize non_remat
-    push_count = count()
+    push_count = itertools.count()
     queue: list[tuple[int, int, UOp]] = [(int(is_remat(k)), next(push_count), k) for k,v in in_degree.items() if v == 0]
 
     linearized: list[UOp] = []
