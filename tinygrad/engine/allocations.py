@@ -94,9 +94,6 @@ def contiguous_mops_to_view(c:UOp):
 def transform_precompiled_call(c:UOp) -> UOp|None:
   if not c.arg.precompile and not c.arg.rematerialize: return None
   if c.src[0].op is Ops.SINK: return None
-  assert all_same([arg._device for arg in c.src[1:] if arg._device is not None ])
-  device_param_sub = {param: param.replace_src_at(1, UOp(Ops.DEVICE, arg=c.src[1].device)) for param in get_call_params(c) if c.src[1].op is not Ops.DEVICE}
-  c = c.replace_src_at(0, c.src[0].substitute(device_param_sub, walk=True))
   out = _buffer_like(c)
   input_buffers = tuple(x.contiguous() if x.op not in {Ops.AFTER, Ops.BIND} else x for x in c.src[1:])
   fxn = out.param_like(len(c.src)-1).assign(c.src[0]).sink()
