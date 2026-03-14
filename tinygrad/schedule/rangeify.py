@@ -560,7 +560,7 @@ def do_remat(tsink: UOp) -> UOp:
     for c, idx in c_pos[1:]:
       new_buf = UOp(Ops.BUFFER, old_buf.dtype, (UOp(Ops.LUNIQUE, arg=next(lunique_iter)), UOp(Ops.DEVICE, arg=old_buf.device)), prod(old_buf.shape))
       new_after = after.substitute({old_buf: new_buf.reshape(old_buf.shape)})
-      remat_rep[c] = remat_rep.get(c, c).replace_src_at(idx, new_after)
+      remat_rep[c] = remat_rep.get(c, c).replace(src=c.src[:idx] + (new_after, ) + c.src[idx+1:])
 
   if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
   return tsink

@@ -139,7 +139,6 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     assert len(kwargs) == 0, f"unused kwargs in replace {list(kwargs)}"
     if (self.op, self.dtype, self.src, self.arg, self.tag) == new_args: return self
     return UOp(*new_args)
-  def replace_src_at(self, idx:int, src:UOp) -> UOp: return self.replace(src=self.src[:idx] + (src, ) + self.src[idx+1:])
   def rtag(self, tag=True): return self.replace(tag=tag)
   @recursive_property
   def key(self) -> bytes:
