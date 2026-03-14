@@ -1,4 +1,4 @@
-from tinygrad.helpers import all_same, prod, getenv, LATE_ALLREDUCE
+from tinygrad.helpers import all_same, prod, getenv
 from tinygrad.uop.ops import Ops, UOp, PatternMatcher, UPat, GroupOp, graph_rewrite, should_resolve_call
 from tinygrad.dtype import dtypes
 from tinygrad.schedule.allreduce import handle_allreduce
@@ -38,7 +38,7 @@ replace_allreduce = PatternMatcher([
 _early_allreduce = PatternMatcher([
   (UPat(Ops.ALLREDUCE, src=(UPat.var("buf"), UPat()), name="red"), handle_allreduce),
 ])
-if not LATE_ALLREDUCE: replace_allreduce = _early_allreduce + replace_allreduce
+if not getenv("LATE_ALLREDUCE", 1): replace_allreduce = _early_allreduce + replace_allreduce
 
 # ***** multi functions *****
 
