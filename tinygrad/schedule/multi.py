@@ -1,8 +1,8 @@
+import itertools
 from tinygrad.helpers import all_same, prod, getenv
 from tinygrad.uop.ops import Ops, UOp, PatternMatcher, UPat, GroupOp, graph_rewrite, should_resolve_call
 from tinygrad.dtype import dtypes
 from tinygrad.schedule.allreduce import handle_allreduce
-import itertools
 
 # ***** multi rewrite MSELECT/MSTACK *****
 
