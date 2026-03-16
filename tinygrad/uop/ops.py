@@ -245,8 +245,11 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
         return None
 
       # passthrough ops
-      case Ops.REDUCE | Ops.MSTACK | Ops.MSELECT | Ops.DETACH | Ops.CONTIGUOUS | Ops.CONTIGUOUS_BACKWARD | Ops.AFTER | Ops.END | Ops.FSDP:
+      case Ops.REDUCE | Ops.MSTACK | Ops.MSELECT | Ops.DETACH | Ops.CONTIGUOUS | Ops.CONTIGUOUS_BACKWARD | Ops.AFTER | Ops.END:
         return self.src[0]._shape
+      
+      # logical shape in arg (needed for param padding)
+      case Ops.FSDP: return self.arg
 
       case Ops.CALL:
         inner_shape = self.src[0]._shape
@@ -459,7 +462,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     return UOp(Ops.STORE, kwargs.pop("dtype", dtypes.void), (self, UOp.const(self.dtype, src) if not isinstance(src, UOp) else src), **kwargs)
   def end(self, *src:UOp): return UOp(Ops.END, src=(self,)+src) if len(src) else self
   def after(self, *src:UOp, **kwargs): return UOp(Ops.AFTER, self.dtype, (self,)+src, **kwargs) if len(src) else self
-  def fsdp(self): return UOp(Ops.FSDP, self.dtype, (self,))
+  def fsdp(self, logical_shape:tuple[sint,...]) -> UOp: return UOp(Ops.FSDP, self.dtype, (self,), arg=logical_shape)
   def assign(self, x:UOp): return self.after(self.store(x))
   def barrier(self, *src:UOp): return UOp(Ops.BARRIER, src=(self,)+src)
   def contract(self, *rngs:UOp):

@@ -1,7 +1,7 @@
 from typing import cast
 import math, dataclasses
 from tinygrad.uop.ops import UOp, PatternMatcher, UPat, Ops, all_metadata
-from tinygrad.helpers import argsort
+from tinygrad.helpers import argsort, prod
 
 def reduce_gradient(ctx:UOp, ret:UOp, op:Ops):
   def broadcast_to_input(x): return x.reshape(x.shape+(1,)*(len(ret.src[0].shape)-len(x.shape))).expand(ret.src[0].shape)
@@ -34,11 +34,9 @@ def call_gradient(ctx:UOp, k:UOp) -> tuple[UOp|None, ...]:
       ret.append(None)
   return tuple(ret)
 
-def fsdp_gradient(ctx:UOp, fsdp:UOp) -> tuple[UOp|None, ...]:
-  if not isinstance(ctx.device, tuple): raise RuntimeError(f"FSDP grad expected tuple device, got {ctx.device}")
-  # backward: full grad on gathered param -> sharded grad for source param
-  rs = ctx.reshape((-1,)).allreduce(Ops.ADD, ctx.device)._shard(0).multi(0) / len(ctx.device)
-  return (rs.reshape(fsdp.src[0].shape),)
+def fsdp_gradient(ctx: UOp, fsdp: UOp) -> tuple[UOp|None, ...]:
+  flat = ctx.reshape((-1,)).pad(((0, max(fsdp.src[0].shape[0] - prod(fsdp.arg), 0)),))
+  return (flat.allreduce(Ops.ADD, ctx.device)._shard(0).multi(0) / len(ctx.device),)
 
 # ctx is grad_output
 pm_gradient = PatternMatcher([

@@ -461,8 +461,8 @@ class Tensor(OpMixin):
     return Tensor(self.uop.allgather(), device=self.device, dtype=self.dtype, requires_grad=self.requires_grad)
 
   def fsdp(self, devices:tuple[str]) -> Tensor:
-    sharded_param = self.reshape(-1).shard(devices, 0).reshape(self.shape)
-    return Tensor(sharded_param.uop.fsdp(), device=devices, dtype=self.dtype, requires_grad=self.requires_grad)
+    sharded_param = self.reshape(-1).pad((0,-self.uop.size%len(devices))).shard(devices, 0)
+    return Tensor(sharded_param.uop.fsdp(self.shape), device=devices, dtype=self.dtype, requires_grad=self.requires_grad)
 
   def fsdp_(self, devices:tuple[str]) -> Tensor: return self.replace(self.fsdp(devices))
 

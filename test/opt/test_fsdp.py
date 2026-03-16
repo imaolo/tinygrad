@@ -2,7 +2,7 @@ import unittest, functools
 from collections import defaultdict
 from tinygrad import Tensor, Device, TinyJit, function, GlobalCounters
 from tinygrad.nn import Linear, optim, state
-from tinygrad.helpers import ProfilePointEvent, ProfileEvent, Context, CI
+from tinygrad.helpers import ProfilePointEvent, ProfileEvent, Context, CI, ceildiv
 from tinygrad.device import Buffer
 from tinygrad.uop.ops import Ops
 from typing import Callable
@@ -301,6 +301,29 @@ class TestFSDPOptState(TestFSDP):
   _opt_fn = staticmethod(lambda params, lr: optim.SGD(params, lr, momentum=0.9))
   _n_state_per_param = 1  # SGD with momentum has 1 state buffer per param
 
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPUneven(TestFSDP):
+  in_dim, out_dim, n_dim, n_layers = 7, 9, 65, 2
+
+  def test_model_has_uneven_param_sizes(self):
+    model = _Model(self.in_dim, self.out_dim, self.n_dim, self.n_layers)
+    self.assertTrue(any(p.numel() % N_DEVICES != 0 for p in state.get_parameters(model)))
+
+  def test_fsdp_fewer_full_size_buffers_than_nonfsdp(self):
+    """FSDP should still reduce the number of full-param buffers at peak for uneven params."""
+    events_fsdp = self._profile_one_step(use_fsdp=True)
+    events_nonfsdp = self._profile_one_step(use_fsdp=False)
+    dev = self.devices[0]
+    model = _Model(self.in_dim, self.out_dim, self.n_dim, self.n_layers)
+    param_numels = [p.numel() for p in state.get_parameters(model)]
+    fsdp_full_sizes = {ceildiv(numel, N_DEVICES) * N_DEVICES * 4 for numel in param_numels}
+    nonfsdp_full_sizes = {numel * 4 for numel in param_numels}
+    fsdp_full = sum(_buffers_at_peak(events_fsdp, dev).get(sz, 0) for sz in fsdp_full_sizes)
+    nonfsdp_full = sum(_buffers_at_peak(events_nonfsdp, dev).get(sz, 0) for sz in nonfsdp_full_sizes)
+    self.assertLess(fsdp_full, nonfsdp_full,
+      f"FSDP has {fsdp_full} padded full-param buffers at peak, non-FSDP has {nonfsdp_full}. "
+      f"FSDP should have fewer.")
+
 # TODO: FSDP does not yet support FUSE_OPTIM — pad_multi asserts on padding along the sharded axis
 @unittest.skip("FSDP + FUSE_OPTIM not yet supported")
 @unittest.skipIf(not_support_multi_device(), "no multi")
@@ -400,6 +423,11 @@ class TestFSDPJit(unittest.TestCase):
     # compare post-warmup peaks
     self.assertLess(peaks_mp2[-1], peaks_mp1[-1],
       f"MEMORY_PLANNER=2 peak {peaks_mp2[-1]/1e6:.1f} MB should be < default peak {peaks_mp1[-1]/1e6:.1f} MB")
+
+@unittest.skipIf(not_support_multi_device(), "no multi")
+class TestFSDPUnevenJit(TestFSDPJit):
+  """JIT should also work with uneven padded FSDP parameter sizes."""
+  in_dim, out_dim, n_dim, n_layers = 7, 9, 65, 5
 
 if __name__ == '__main__':
   unittest.main()

@@ -43,7 +43,7 @@ class Optimizer:
 
   def post_step(self):
     for sp, fp in self.shard_to_fsdp.items():
-      fp.uop = sp.uop.fsdp()
+      fp.uop = sp.uop.fsdp(fp.uop.arg)
 
   def step(self):
     Tensor.realize(*self.schedule_step())
