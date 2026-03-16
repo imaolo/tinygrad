@@ -50,6 +50,7 @@ def create_schedule(sched_sink:UOp) -> UOp:
     # prioritize non_remat
     push_count = itertools.count()
     queue: list[tuple[int, int, UOp]] = [(int(is_remat(k)), next(push_count), k) for k,v in in_degree.items() if v == 0]
+    heapq.heapify(queue)
 
     linearized: list[UOp] = []
     while len(queue):
