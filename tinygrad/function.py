@@ -85,5 +85,5 @@ def function(fxn:Callable[..., ReturnType], *, precompile:bool=False, allow_impl
 def function(fxn:None=None, *, precompile:bool=False, allow_implicit:bool=True,
              rematerialize:bool=False, grad_fxn:Callable|None=None) -> Callable[[Callable[..., ReturnType]], _function[ReturnType]]: ...
 def function(fxn=None, *, precompile:bool=False, allow_implicit:bool=True, rematerialize:bool=False, grad_fxn:Callable|None=None):
-  if fxn is None: return lambda f: _function(f, precompile=precompile, allow_implicit=allow_implicit, grad_fxn=grad_fxn)
+  if fxn is None: return lambda f: _function(f, precompile=precompile, allow_implicit=allow_implicit, grad_fxn=grad_fxn, rematerialize=rematerialize)
   return _function(fxn, precompile=precompile, allow_implicit=allow_implicit, grad_fxn=grad_fxn, rematerialize=rematerialize)
