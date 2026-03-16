@@ -356,10 +356,10 @@ class TestFunctionMulti(unittest.TestCase):
         before = sp.numpy().copy()
 
         @function(rematerialize=True)
-        def fake_compute(a: Tensor) -> Tensor: return a.allgather()
+        def fake_compute(a: UOp) -> UOp: return a.allgather()
 
         fg = fake_compute(sp)
-        rs_uop = fg.uop.allreduce(Ops.ADD, fg.device)._shard(0).multi(0)
+        rs_uop = fg.allreduce(Ops.ADD, fg.device)._shard(0).multi(0)
         rs_grad = Tensor(rs_uop, device=sp.device, dtype=fg.dtype)
         sp.assign(sp * rs_grad).realize()
 

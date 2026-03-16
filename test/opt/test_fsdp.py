@@ -25,9 +25,6 @@ N_DEVICES = 4
 def _devices():
   return tuple(f"{Device.DEFAULT}:{i}" for i in range(1, N_DEVICES + 1))
 
-@function(rematerialize=True)
-def allgather_fxn(a: Tensor) -> Tensor: return a.allgather()
-
 class _Model:
   def __init__(self, in_dim: int, out_dim: int, n_dim: int, n_layers: int):
     assert n_layers > 0
