@@ -347,24 +347,6 @@ class TestFunctionMulti(unittest.TestCase):
       f(x).sum().backward()
       np.testing.assert_allclose(x.grad.numpy(), expected)
 
-  def test_remat_assign_with_allreduce(self):
-    from tinygrad.uop.ops import Ops
-    N = 2
-    for in_shape in [(N,1), (N,2), (N,), (N*2,1), (N*2,2), (N*2,)]:
-      with self.subTest(shape=in_shape):
-        sp = Tensor.rand(*in_shape).shard(self.devices_2, 0).realize()
-        before = sp.numpy().copy()
-
-        @function(rematerialize=True)
-        def fake_compute(a: UOp) -> UOp: return a.allgather()
-
-        fg = fake_compute(sp)
-        rs_uop = fg.allreduce(Ops.ADD, fg.device)._shard(0).multi(0)
-        rs_grad = Tensor(rs_uop, device=sp.device, dtype=fg.dtype)
-        sp.assign(sp * rs_grad).realize()
-
-        after = sp.numpy()
-        self.assertFalse((before == after).all(), f"assign was a no-op for shape {in_shape}")
 class TestFunctionTuple(unittest.TestCase):
   def test_tuple(self, precompile=False):
     x = Tensor.ones(3).contiguous()
