@@ -45,6 +45,9 @@ class Optimizer:
       fp.uop = sp.uop.fsdp(fp.uop.arg)
 
   def step(self):
+    """
+    Performs a single optimization step.
+    """
     Tensor.realize(*self.schedule_step())
 
   def schedule_step(self) -> list[Tensor]:
