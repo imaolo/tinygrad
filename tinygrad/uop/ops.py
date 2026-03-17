@@ -939,7 +939,9 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     return [s.after(kernel) for s in contig_srcs]
 
   @functools.cached_property
-  def has_rematerialize_calls(self) -> bool: return any(cast(CallInfo, uop.arg).rematerialize for uop in self.toposort() if uop.op is Ops.CALL)
+  def has_rematerialize_calls(self) -> bool: return any(uop.is_rematerialize_call for uop in self.toposort())
+  @functools.cached_property
+  def is_rematerialize_call(self) -> bool: return self.op is Ops.CALL and cast(CallInfo, self.arg).rematerialize
 
 @dataclass(frozen=True)
 class KernelInfo:

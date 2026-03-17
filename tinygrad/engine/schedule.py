@@ -45,7 +45,7 @@ def create_schedule(sched_sink:UOp) -> UOp:
             raise RuntimeError(f"input to kernel must be AFTER, BUFFER, PARAM, MSELECT, MSTACK, or BIND, not {s.op}")
 
   with cpu_profile(TracingKey("linearize schedule")):
-    def is_remat(k: UOp) -> bool: return (c:=k.src[0] if k.op is Ops.END else k).op is Ops.CALL and c.arg.rematerialize
+    def is_remat(k: UOp) -> bool: return (k.src[0] if k.op is Ops.END else k).is_rematerialize_call
 
     # prioritize non_remat
     push_count = itertools.count()

@@ -555,7 +555,7 @@ split_kernels = PatternMatcher([
   (UPat((Ops.STORE, Ops.END), name="x"), split_store),
 ])
 
-def is_remat(x): return x.src and x.base.op is Ops.AFTER and (call:=x.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize
+def is_remat(x): return x.src and x.base.op is Ops.AFTER and x.base.src[1].is_rematerialize_call
 
 def do_remat(tsink: UOp) -> UOp:
   if not tsink.has_rematerialize_calls: return tsink
