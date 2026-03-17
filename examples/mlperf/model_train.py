@@ -1603,7 +1603,7 @@ def train_llama70b_lora():
     raise NotImplementedError("train_llama70b_lora currently supports FAKEDATA=1 only")
 
   default_model_path = Path(__file__).parents[2] / "weights" / "LLaMA-2" / "70B"
-  model_path = ensure_pretrained_weights(Path(getenv("MODEL_PATH", default_model_path.as_posix())), auto_download=bool(getenv("DOWNLOAD_MODEL", 1)))
+  # model_path = ensure_pretrained_weights(Path(getenv("MODEL_PATH", default_model_path.as_posix())), auto_download=bool(getenv("DOWNLOAD_MODEL", 1)))
 
   config = {}
   BS                 = config["BS"]                     = getenv("BS", 1)
@@ -1666,9 +1666,9 @@ def train_llama70b_lora():
       v.realize()
     vocab_mask.shard_(device, axis=2).realize()
 
-  print(f"loading pretrained weights from {model_path}")
-  weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
-  load_train_state_dict(model, weights, strict=False, consume=True)
+  # print(f"loading pretrained weights from {model_path}")
+  # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
+  # load_train_state_dict(model, weights, strict=False, consume=True)
   freeze_non_lora_params(model)
 
   params = get_parameters(model)
@@ -1684,10 +1684,10 @@ def train_llama70b_lora():
 
   if is_offload_optim:
     for p in optim.params:
-      p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=optim_device, requires_grad=False).contiguous().realize()
+      p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=optim_device, requires_grad=False).contiguous()
   else:
     for p in optim.params:
-      p.grad = p.zeros_like().contiguous().realize()
+      p.grad = p.zeros_like().contiguous()
   grads: list[Tensor] = [p.grad for p in optim.params]
 
   scheduler = CosineAnnealingLRWithWarmup(optim, LR, END_LR, WARMUP_STEPS, max(MAX_STEPS - WARMUP_STEPS, 1))
@@ -1696,13 +1696,13 @@ def train_llama70b_lora():
   def minibatch(tokens:Tensor):
     if FSDP > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
-      tokens = tokens.shard(device)
+      tokens = tokens.to(None).shard(device)
     elif (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
     if FSDP == 1 and (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
-      tokens = tokens.shard(device)
+      tokens = tokens.to(None).shard(device)
     if FSDP == 1 and DP == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
@@ -1723,10 +1723,8 @@ def train_llama70b_lora():
     return lr_cpu, grad_norm_cpu
 
   def fake_data():
-    import numpy as np
     for _ in range(MAX_STEPS * max(grad_acc, 1)):
-      toks = np.random.randint(0, real_vocab_size, size=(BS, SEQLEN + 1), dtype=np.int32)
-      yield Tensor(toks, device="NPY")
+      yield Tensor.randint(BS, SEQLEN + 1, low=0, high=real_vocab_size, dtype='int32', device="CPU")
 
   train_iter = fake_data()
   num_params = sum(p.numel() for p in params) - model_params["vocab_size"] * model_params["dim"]
