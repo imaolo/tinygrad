@@ -36,6 +36,7 @@ def call_gradient(ctx:UOp, k:UOp) -> tuple[UOp|None, ...]:
 
 def fsdp_gradient(ctx: UOp, fsdp: UOp) -> tuple[UOp|None, ...]:
   flat = ctx.reshape((-1,)).pad(((0, max(fsdp.src[0].shape[0] - prod(fsdp.arg), 0)),))
+  # reduce-scatter
   return (flat.allreduce(Ops.ADD, ctx.device)._shard(0).multi(0) / len(ctx.device),)
 
 # ctx is grad_output
