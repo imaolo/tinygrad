@@ -1594,6 +1594,7 @@ def train_llama3():
 def train_llama70b_lora():
   from examples.mlperf.models.llama import (
     Transformer, LLAMA2_70B_ARGS, llama70b_lora_linear, freeze_non_lora_params, load_pretrained_weights, load_train_state_dict,
+    ensure_pretrained_weights,
   )
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
@@ -1601,9 +1602,8 @@ def train_llama70b_lora():
   if not getenv("FAKEDATA", 0):
     raise NotImplementedError("train_llama70b_lora currently supports FAKEDATA=1 only")
 
-  raw_model_path = getenv("MODEL_PATH", "")
-  assert raw_model_path, "MODEL_PATH must point to a pretrained Llama 2 70B checkpoint"
-  model_path = Path(raw_model_path)
+  default_model_path = Path(__file__).parents[2] / "weights" / "LLaMA-2" / "70B"
+  # model_path = ensure_pretrained_weights(Path(getenv("MODEL_PATH", default_model_path.as_posix())), auto_download=bool(getenv("DOWNLOAD_MODEL", 1)))
 
   config = {}
   BS                 = config["BS"]                     = getenv("BS", 1)
@@ -1667,8 +1667,8 @@ def train_llama70b_lora():
     vocab_mask.shard_(device, axis=2).realize()
 
   print(f"loading pretrained weights from {model_path}")
-  weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
-  load_train_state_dict(model, weights, strict=False, consume=True)
+  # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
+  # load_train_state_dict(model, weights, strict=False, consume=True)
   freeze_non_lora_params(model)
 
   params = get_parameters(model)
