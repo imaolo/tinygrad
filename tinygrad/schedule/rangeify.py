@@ -580,7 +580,7 @@ def do_remat(tsink: UOp) -> UOp:
       new_after = after.substitute({old_buf: new_buf.reshape(old_buf.shape)})
       remat_rep[c] = remat_rep.get(c, c).replace(src=c.src[:idx] + (new_after, ) + c.src[idx+1:])
 
-  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
+  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="do remat")
   return tsink
 
 def add_remat_deps(tsink: UOp) -> UOp:
@@ -596,7 +596,7 @@ def add_remat_deps(tsink: UOp) -> UOp:
       extra = tuple(s for s in after_sources if s not in cur.src[2:] and ra not in s.backward_slice)
       if extra: remat_rep[ra] = cur.replace(src=cur.src + extra)
 
-  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="rematerialize")
+  if remat_rep: tsink = graph_rewrite(tsink, _substitute, ctx=remat_rep, bottom_up=True, name="add remat deps")
   return tsink
 
 @profile_matches
