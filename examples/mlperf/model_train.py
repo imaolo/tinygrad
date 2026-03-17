@@ -1612,7 +1612,7 @@ def train_stable_diffusion():
   from examples.mlperf.dataloader import batch_load_train_stable_diffusion
   from examples.mlperf.lr_schedulers import LambdaLR, LambdaLinearScheduler
   from examples.mlperf.initializers import init_stable_diffusion
-  from examples.mlperf.helpers import get_state_dict_cpu
+  from examples.mlperf.helpers import get_training_state
   import numpy as np
 
   config = {}
@@ -1629,8 +1629,6 @@ def train_stable_diffusion():
   DATADIR            = config["DATADIR"]                = Path(getenv("DATADIR", "./datasets"))
   UNET_CKPTDIR       = config["UNET_CKPTDIR"]           = Path(getenv("UNET_CKPTDIR", "./checkpoints"))
   TOTAL_CKPTS        = config["TOTAL_CKPTS"]            = getenv("TOTAL_CKPTS", 0)
-  UNET_FSDP          = config["UNET_FSDP"]              = getenv("UNET_FSDP", 0)
-  OFFLOAD_OPTIM      = config["OFFLOAD_OPTIM"]          = getenv("OFFLOAD_OPTIM", 0)
 
   print(f"training on {GPUS}")
   lr = BS * BASE_LR
@@ -1642,10 +1640,9 @@ def train_stable_diffusion():
     wandb.init(config=config, project="MLPerf-Stable-Diffusion")
 
   Tensor.manual_seed(seed)  # seed for weight initialization
-  model, unet, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod = \
-    init_stable_diffusion("v2-mlperf-train", CKPTDIR / "sd" / "512-base-ema.ckpt", GPUS, fsdp=bool(UNET_FSDP))
+  model, unet, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod = init_stable_diffusion("v2-mlperf-train", CKPTDIR / "sd" / "512-base-ema.ckpt", GPUS)
 
-  optimizer = AdamW(get_parameters(unet), device="CPU" if OFFLOAD_OPTIM else None)
+  optimizer = AdamW(get_parameters(unet))
   lambda_lr_callback = LambdaLinearScheduler(1000, 1.0, 1.0, 1e-06, 10000000000000).schedule
   lr_scheduler = LambdaLR(optimizer, Tensor(lr, dtype=dtypes.float, device=optimizer.device), lambda_lr_callback)
 
@@ -1683,7 +1680,14 @@ def train_stable_diffusion():
 
   # checkpointing takes ~9 minutes without this, and ~1 minute with this
   @TinyJit
-  def unet_to_cpu(): return get_state_dict_cpu(unet)
+  def ckpt_to_cpu():
+    ckpt = get_training_state(unet, optimizer, lr_scheduler)
+    # move to CPU first so more GPU bufs aren't created (can trigger OOM)
+    for k,v in ckpt.items(): ckpt[k] = v.detach().to("CPU")
+    Tensor.realize(*[v for v in ckpt.values()])
+    for k,v in ckpt.items(): ckpt[k] = v.cast(v.dtype.base).contiguous()
+    Tensor.realize(*[v for v in ckpt.values()])
+    return ckpt
 
   # training loop
   dl = batch_load_train_stable_diffusion(f'{DATADIR}/laion-400m/webdataset-moments-filtered/{{00000..00831}}.tar', BS)
@@ -1710,7 +1714,7 @@ def train_stable_diffusion():
     t2 = time.perf_counter()
 
     if i == 3:
-      for _ in range(3): unet_to_cpu() # do this at the beginning of run to prevent OOM surprises when checkpointing
+      for _ in range(3): ckpt_to_cpu() # do this at the beginning of run to prevent OOM surprises when checkpointing
       print("BEAM COMPLETE", flush=True) # allows wrapper script to detect BEAM search completion and retry if it failed
 
     total_train_time = time.perf_counter() - train_start_time
@@ -1729,7 +1733,7 @@ def train_stable_diffusion():
       fn = f"{UNET_CKPTDIR}/{i}.safetensors"
       print(f"saving unet checkpoint at {fn}")
       saved_checkpoints.append(fn)
-      safe_save(unet_to_cpu(), fn)
+      safe_save({k.replace("model.", ""):v for k,v in ckpt_to_cpu().items() if k.startswith("model.")}, fn)
       if TOTAL_CKPTS and i == TOTAL_CKPTS * CKPT_STEP_INTERVAL:
         print(f"ending run after {i} steps ({TOTAL_CKPTS} checkpoints collected)")
         return saved_checkpoints

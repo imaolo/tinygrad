@@ -19,13 +19,6 @@ def get_training_state(model, optimizer, scheduler):
   # readable and can be loaded as a model for eval
   train_state = {'model': model, 'optimizer': optimizer, 'scheduler': scheduler}
   return dedup_dict(state.get_state_dict(train_state))
-def get_state_dict_cpu(model):
-  state_dict = state.get_state_dict(model)
-  for k,v in state_dict.items(): state_dict[k] = v.detach().to("CPU")
-  Tensor.realize(*state_dict.values())
-  for k,v in state_dict.items(): state_dict[k] = v.cast(v.dtype.base).contiguous()
-  Tensor.realize(*state_dict.values())
-  return state_dict
 def load_training_state(model, optimizer, scheduler, state_dict):
   # use fresh model to restore duplicate keys
   train_state = {'model': model, 'optimizer': optimizer, 'scheduler': scheduler}

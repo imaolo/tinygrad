@@ -4,7 +4,6 @@ from typing import Union
 from tinygrad import Tensor, nn, dtypes
 from tinygrad.helpers import prod, argfix, Context
 from tinygrad.nn.state import get_parameters
-from tinygrad.uop.ops import Ops
 from extra.models.unet import UNetModel
 
 # rejection sampling truncated randn
@@ -163,20 +162,15 @@ def zero_module(module):
 def attn_f32_softmax(q:Tensor, k:Tensor, v:Tensor) -> Tensor:
   return (q.matmul(k.transpose(-2,-1), dtype=dtypes.float32) / math.sqrt(q.shape[-1])).softmax(-1).cast(q.dtype) @ v
 
-def _materialized_params(params:list[Tensor]) -> list[Tensor]:
-  return [Tensor(p.uop.src[0], dtype=p.uop.src[0].dtype, device=p.uop.src[0].device, requires_grad=False) if p.uop.op is Ops.FSDP else p
-          for p in params]
-
-def init_stable_diffusion(version:str, pretrained:str, devices:list[str], fsdp:bool=False):
+def init_stable_diffusion(version:str, pretrained:str, devices:list[str]):
   from examples.stable_diffusion import StableDiffusion
   from tinygrad.nn.state import safe_load, safe_save, load_state_dict, get_state_dict
   from tempfile import TemporaryDirectory
   model = StableDiffusion(version=version, pretrained=pretrained)
   unet:UNetModel = model.model.diffusion_model
-  unet_params = get_parameters(unet)
 
   # this prevents extra consumption of memory, enabling much larger BS
-  Tensor.realize(*unet_params)
+  Tensor.realize(*get_parameters(unet))
   with TemporaryDirectory(prefix="unet_init") as tmp:
     safe_save(get_state_dict(unet), init_fn:=f"{tmp}/init_model.safetensors")
     load_state_dict(unet, safe_load(init_fn))
@@ -186,17 +180,9 @@ def init_stable_diffusion(version:str, pretrained:str, devices:list[str], fsdp:b
 
   if len(devices) > 1:
     to_move = [sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod]
-    for p in to_move: p.to_(devices)
-    if version == "v2-mlperf-train":
-      cond_params = get_parameters(model.cond_stage_model)
-      for p in cond_params: p.to_(devices)
-      if fsdp:
-        for p in unet_params: p.fsdp_(tuple(devices))
-        to_move += _materialized_params(unet_params)
-      else:
-        for p in unet_params: p.to_(devices)
-        to_move += unet_params
-      to_move += cond_params
+    if version == "v2-mlperf-train": to_move += get_parameters(unet) + get_parameters(model.cond_stage_model)
+    for p in to_move:
+      p.to_(devices)
     with Context(BEAM=0):
       Tensor.realize(*to_move)
 
