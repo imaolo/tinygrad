@@ -620,7 +620,7 @@ def get_kernel_graph(sink:UOp) -> UOp:
   tsink = graph_rewrite(tsink, pm_add_buffers+pm_add_range_tags, ctx=itertools.count(tsink.lunique_start), bottom_up=True, name="bufferize to store")
   tsink = graph_rewrite(tsink, split_kernels, bottom_up=True, name="split kernels")
 
-  # remats are the last of its siblings to execute, needed for buffer liveness
+  # make remats the last of its siblings to be materialized, needed for buffer liveness
   tsink = add_remat_deps(tsink)
 
   # WAR deps: if kernel U reads buffer S, and S is also written by another kernel, S's write must wait for U to finish
