@@ -104,7 +104,6 @@ def profile_one_step_jit(mode:Mode, warmup:int=2) -> dict[str, int]:
   for _ in range(warmup):
     jit_step(x.contiguous(), y.contiguous())
   GlobalCounters.reset()
-  GlobalCounters.reset_peak()
   jit_step(x.contiguous(), y.contiguous())
   Device[Device.DEFAULT].synchronize()
   return {dev: GlobalCounters.peak_mem_used_per_device.get(dev, 0) for dev in CANON_DEVICES}
