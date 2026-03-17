@@ -1684,10 +1684,10 @@ def train_llama70b_lora():
 
   if is_offload_optim:
     for p in optim.params:
-      p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=optim_device, requires_grad=False).contiguous()
+      p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=optim_device, requires_grad=False).contiguous().realize()
   else:
     for p in optim.params:
-      p.grad = p.zeros_like().contiguous()
+      p.grad = p.zeros_like().contiguous().realize()
   grads: list[Tensor] = [p.grad for p in optim.params]
 
   scheduler = CosineAnnealingLRWithWarmup(optim, LR, END_LR, WARMUP_STEPS, max(MAX_STEPS - WARMUP_STEPS, 1))
