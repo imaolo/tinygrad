@@ -81,7 +81,6 @@ class OptimizerGroup(Optimizer):
     self.params, self.buffers = flatten([o.params for o in self.optimizers]), flatten([o.buffers for o in self.optimizers])
   def __getitem__(self, i): return self.optimizers[i]
   def zero_grad(self): [o.zero_grad() for o in self.optimizers]
-  def post_step(self): [o.post_step() for o in self.optimizers]
   def schedule_step(self) -> list[Tensor]: return [x for o in self.optimizers for x in o.schedule_step()]
 
 # LARS is essentially just trust ratio to SGD so if we just set the trust coeff 0.0 it's just standard SGD.
