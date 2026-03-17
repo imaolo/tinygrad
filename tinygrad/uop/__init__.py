@@ -106,6 +106,7 @@ class Ops(FastEnum):
   # expander ops
   UNROLL = auto(); CONTRACT = auto(); VCAT = auto(); PTRCAT = auto()
 
+  # sharded parameter
   FSDP = auto()
 
 class GroupOp:
