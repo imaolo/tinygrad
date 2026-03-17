@@ -1591,6 +1591,162 @@ def train_llama3():
           safe_save(get_state_dict(model), fn)
         break
 
+def train_llama70b_lora():
+  from examples.mlperf.models.llama import (
+    Transformer, LLAMA2_70B_ARGS, llama70b_lora_linear, freeze_non_lora_params, load_pretrained_weights,
+  )
+  from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
+  from examples.mlperf.optim import GradAccClipAdamW
+
+  if not getenv("FAKEDATA", 0):
+    raise NotImplementedError("train_llama70b_lora currently supports FAKEDATA=1 only")
+
+  raw_model_path = getenv("MODEL_PATH", "")
+  assert raw_model_path, "MODEL_PATH must point to a pretrained Llama 2 70B checkpoint"
+  model_path = Path(raw_model_path)
+
+  config = {}
+  BS                 = config["BS"]                     = getenv("BS", 1)
+  grad_acc           = config["GRADIENT_ACC_STEPS"]     = getenv("GRADIENT_ACC_STEPS", 1)
+  GBS                = config["GLOBAL_BATCH_SIZE"]      = BS * grad_acc
+  SEED               = config["SEED"]                   = getenv("SEED", 42)
+  SEQLEN             = config["SEQLEN"]                 = getenv("SEQLEN", 2048)
+  MAX_STEPS          = config["MAX_STEPS"]              = getenv("MAX_STEPS", 1)
+  WARMUP_STEPS       = config["WARMUP_STEPS"]           = getenv("WARMUP_STEPS", 0)
+  LR                 = config["LR"]                     = getenv("LR", 1e-4)
+  END_LR             = config["END_LR"]                 = getenv("END_LR", 1e-5)
+  LORA_R             = config["LORA_R"]                 = getenv("LORA_R", 16)
+  LORA_ALPHA         = config["LORA_ALPHA"]             = getenv("LORA_ALPHA", 32.0)
+  LORA_DROPOUT       = config["LORA_DROPOUT"]           = getenv("LORA_DROPOUT", 0.1)
+
+  opt_adamw_beta_1 = 0.9
+  opt_adamw_beta_2 = 0.95
+  opt_adamw_epsilon = 1e-5
+  opt_adamw_weight_decay = 0.0
+
+  Tensor.manual_seed(SEED)
+
+  model_params = dict(LLAMA2_70B_ARGS)
+  if (llama_layers := getenv("LLAMA_LAYERS")) != 0: model_params["n_layers"] = llama_layers
+  real_vocab_size = model_params["vocab_size"]
+  if (MP := getenv("MP", 1)) > 1: model_params["vocab_size"] = round_up(model_params["vocab_size"], 256 * MP)
+  vocab_mask:Tensor = Tensor.arange(model_params["vocab_size"]).reshape(1, 1, -1) >= real_vocab_size
+
+  named_linear = lambda name, in_features, out_features, bias=False: llama70b_lora_linear(
+    name, in_features, out_features, bias=bias, rank=LORA_R, alpha=LORA_ALPHA, dropout=LORA_DROPOUT)
+  model = Transformer(**model_params, max_context=SEQLEN, named_linear=named_linear, fused_qkv=True)
+  freeze_non_lora_params(model)
+
+  if (DP := getenv("DP", 1)) > 1:
+    device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
+    for v in get_parameters(model): v.shard_(device, axis=None)
+    vocab_mask.shard_(device, axis=None)
+
+  if MP > 1:
+    device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
+    for k,v in get_state_dict(model).items():
+      if ".attention.wqkv.lora_a" in k: v.shard_(device, axis=None)
+      elif ".attention.wqkv." in k: v.shard_(device, axis=0)
+      elif ".attention.wo.lora_a" in k: v.shard_(device, axis=1)
+      elif ".attention.wo.lora_b" in k: v.shard_(device, axis=None)
+      elif ".attention.wo." in k: v.shard_(device, axis=1)
+      elif ".feed_forward.w1." in k: v.shard_(device, axis=0)
+      elif ".feed_forward.w2." in k: v.shard_(device, axis=1)
+      elif ".feed_forward.w3." in k: v.shard_(device, axis=0)
+      elif "tok_embeddings.weight" in k: v.shard_(device, axis=0)
+      elif "output.weight" in k: v.shard_(device, axis=0)
+      else: v.shard_(device, axis=None)
+      v.realize()
+    vocab_mask.shard_(device, axis=2).realize()
+
+  print(f"loading pretrained weights from {model_path}")
+  weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
+  load_state_dict(model, weights, strict=False, consume=True)
+  freeze_non_lora_params(model)
+
+  params = get_parameters(model)
+  trainable_params = [p for p in params if p.requires_grad]
+  assert trainable_params, "no LoRA parameters are trainable"
+  print(f"trainable params: {sum(p.numel() for p in trainable_params):,} / {sum(p.numel() for p in params):,}")
+
+  is_offload_optim = bool(getenv("OFFLOAD_OPTIM"))
+  is_fake_offload = Device.DEFAULT == "NULL"
+  optim_device = ("CPU" if not is_fake_offload else "NULL:99") if is_offload_optim else None
+  optim = GradAccClipAdamW(get_parameters(model), lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
+                           eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
+
+  if is_offload_optim:
+    for p in optim.params:
+      p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=optim_device, requires_grad=False).contiguous().realize()
+  else:
+    for p in optim.params:
+      p.grad = p.zeros_like().contiguous().realize()
+  grads: list[Tensor] = [p.grad for p in optim.params]
+
+  scheduler = CosineAnnealingLRWithWarmup(optim, LR, END_LR, WARMUP_STEPS, max(MAX_STEPS - WARMUP_STEPS, 1))
+
+  @TinyJit
+  def minibatch(tokens:Tensor):
+    if (DP := getenv("DP", 1)) > 1:
+      device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
+      tokens = tokens.to(None).shard(device, 0)
+    if (MP := getenv("MP", 1)) > 1:
+      device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
+      tokens = tokens.shard(device)
+    if DP == 1 and MP == 1: tokens = tokens.to(None)
+    logits:Tensor = model(tokens[:, :-1])
+    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
+    loss.backward()
+    assert all(p.grad is g for p,g in zip(optim.params, grads))
+    loss_cpu = loss.flatten().float().to("CPU")
+    Tensor.realize(loss_cpu, *grads)
+    return loss_cpu
+
+  @TinyJit
+  def optim_step():
+    grad_norm = optim.fstep(grads)
+    scheduler.step()
+    for g in grads: g.assign(g.zeros_like())
+    lr_cpu = optim.lr.float().to("CPU")
+    grad_norm_cpu = grad_norm.float().to("CPU")
+    Tensor.realize(lr_cpu, grad_norm_cpu, *grads)
+    return lr_cpu, grad_norm_cpu
+
+  def fake_data():
+    import numpy as np
+    for _ in range(MAX_STEPS * max(grad_acc, 1)):
+      toks = np.random.randint(0, real_vocab_size, size=(BS, SEQLEN + 1), dtype=np.int32)
+      yield Tensor(toks, device="NPY")
+
+  train_iter = fake_data()
+  num_params = sum(p.numel() for p in params) - model_params["vocab_size"] * model_params["dim"]
+  for i in range(MAX_STEPS):
+    GlobalCounters.reset()
+    st = time.perf_counter()
+    losses, data_time, dev_time = [], 0.0, 0.0
+    for _ in range(grad_acc):
+      ist = time.perf_counter()
+      tokens = next(train_iter)
+      mst = time.perf_counter()
+      data_time += mst - ist
+      losses.append(minibatch(tokens).item())
+      dev_time += time.perf_counter() - mst
+    gt = time.perf_counter()
+    lr, grad_norm = optim_step()
+    et = time.perf_counter()
+
+    loss = sum(losses) / len(losses)
+    optim_time = et - gt
+    dev_time += optim_time
+    step_time = et - st
+    mem_gb = GlobalCounters.mem_used / 1e9
+    gflops = GlobalCounters.global_ops / 1e9 / max(dev_time, 1e-9)
+    mfu = ((6 * num_params * SEQLEN * GBS) / (max(dev_time, 1e-9) * max(getenv("DP", 1), getenv("MP", 1)) * 2.3e15)) * 100
+    tqdm.write(
+      f"{i+1:5} {step_time:.3f} s step, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, "
+      f"{lr.item():.12f} LR, {grad_norm.item():.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
+    if DEBUG >= 1: tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
+
 def train_stable_diffusion():
   from extra.models.unet import UNetModel
   from examples.mlperf.dataloader import batch_load_train_stable_diffusion
