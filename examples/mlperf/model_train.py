@@ -1666,7 +1666,7 @@ def train_llama70b_lora():
       v.realize()
     vocab_mask.shard_(device, axis=2).realize()
 
-  # print(f"loading pretrained weights from {model_path}")
+  print(f"loading pretrained weights from {model_path}")
   # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
   # load_train_state_dict(model, weights, strict=False, consume=True)
   freeze_non_lora_params(model)
