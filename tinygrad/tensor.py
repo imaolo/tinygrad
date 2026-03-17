@@ -458,6 +458,7 @@ class Tensor(OpMixin):
     return self if isinstance(self.device, tuple) and (y.device, y.uop.axis) == (self.device, self.uop.axis) else self.shard(y.device, y.uop.axis)
 
   def fsdp(self, devices:tuple[str]) -> Tensor:
+    if self.uop.op is Ops.FSDP: return self
     sharded_param = self.reshape(-1).pad((0,-self.uop.size%len(devices))).shard(devices, 0)
     return Tensor(sharded_param.uop.fsdp(self.shape), device=devices, dtype=self.dtype, requires_grad=self.requires_grad)
 
