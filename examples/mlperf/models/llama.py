@@ -6,6 +6,7 @@ from tinygrad import Tensor, nn
 from tinygrad.helpers import getenv
 from tinygrad.nn.state import safe_load, torch_load
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis, convert_from_huggingface as convert_base_from_huggingface, fix_bf16
+from tinygrad.uop.ops import Ops
 
 LLAMA2_70B_ARGS = {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "vocab_size": 32000, "hidden_dim": 28672}
 
@@ -85,6 +86,27 @@ def load_pretrained_weights(model_path:Path, n_layers:int, n_heads:int, n_kv_hea
     weights = convert_base_from_huggingface(weights, n_layers, n_heads, n_kv_heads)
   weights = fix_bf16(weights)
   return fuse_qkv_weights(weights, n_layers) if fused_qkv else weights
+
+def load_train_state_dict(model, state_dict:dict[str, Tensor], strict:bool=False, consume:bool=True) -> None:
+  for k, v in nn.state.get_state_dict(model).items():
+    if k not in state_dict:
+      if strict: raise KeyError(f"missing key {k} in state_dict")
+      continue
+    src = state_dict[k]
+    if v.shape != src.shape:
+      if {(), (1,)} == {src.shape, v.shape}: src = src.reshape(v.shape)
+      else: raise ValueError(f"shape mismatch for {k}: expected {v.shape}, found {src.shape}")
+    if v.uop.op is Ops.FSDP:
+      v.replace(src.fsdp(v.device))
+      if consume: del state_dict[k]
+      continue
+    elif isinstance(v.device, tuple):
+      if isinstance(src.device, tuple): v.replace(src)
+      else: v.replace(src.shard(v.device, v.uop.axis))
+    else:
+      v.replace(src.to(v.device))
+    v.realize()
+    if consume: del state_dict[k]
 
 class Attention:
   def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear, named_linear:NamedLinear|None=None,

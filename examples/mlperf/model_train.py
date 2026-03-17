@@ -1593,7 +1593,7 @@ def train_llama3():
 
 def train_llama70b_lora():
   from examples.mlperf.models.llama import (
-    Transformer, LLAMA2_70B_ARGS, llama70b_lora_linear, freeze_non_lora_params, load_pretrained_weights,
+    Transformer, LLAMA2_70B_ARGS, llama70b_lora_linear, freeze_non_lora_params, load_pretrained_weights, load_train_state_dict,
   )
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
@@ -1611,6 +1611,7 @@ def train_llama70b_lora():
   GBS                = config["GLOBAL_BATCH_SIZE"]      = BS * grad_acc
   SEED               = config["SEED"]                   = getenv("SEED", 42)
   SEQLEN             = config["SEQLEN"]                 = getenv("SEQLEN", 2048)
+  FSDP               = config["FSDP"]                   = getenv("FSDP", 1)
   MAX_STEPS          = config["MAX_STEPS"]              = getenv("MAX_STEPS", 1)
   WARMUP_STEPS       = config["WARMUP_STEPS"]           = getenv("WARMUP_STEPS", 0)
   LR                 = config["LR"]                     = getenv("LR", 1e-4)
@@ -1629,6 +1630,8 @@ def train_llama70b_lora():
   model_params = dict(LLAMA2_70B_ARGS)
   if (llama_layers := getenv("LLAMA_LAYERS")) != 0: model_params["n_layers"] = llama_layers
   real_vocab_size = model_params["vocab_size"]
+  if FSDP > 1 and (getenv("DP", 1) > 1 or getenv("MP", 1) > 1):
+    raise NotImplementedError("FSDP for llama70b_lora is currently supported only with DP=1 and MP=1")
   if (MP := getenv("MP", 1)) > 1: model_params["vocab_size"] = round_up(model_params["vocab_size"], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params["vocab_size"]).reshape(1, 1, -1) >= real_vocab_size
 
@@ -1637,7 +1640,11 @@ def train_llama70b_lora():
   model = Transformer(**model_params, max_context=SEQLEN, named_linear=named_linear, fused_qkv=True)
   freeze_non_lora_params(model)
 
-  if (DP := getenv("DP", 1)) > 1:
+  if FSDP > 1:
+    device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
+    for v in get_parameters(model): v.fsdp_(device)
+    vocab_mask.shard_(device, axis=None)
+  elif (DP := getenv("DP", 1)) > 1:
     device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
     for v in get_parameters(model): v.shard_(device, axis=None)
     vocab_mask.shard_(device, axis=None)
@@ -1661,7 +1668,7 @@ def train_llama70b_lora():
 
   print(f"loading pretrained weights from {model_path}")
   weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
-  load_state_dict(model, weights, strict=False, consume=True)
+  load_train_state_dict(model, weights, strict=False, consume=True)
   freeze_non_lora_params(model)
 
   params = get_parameters(model)
@@ -1687,13 +1694,16 @@ def train_llama70b_lora():
 
   @TinyJit
   def minibatch(tokens:Tensor):
-    if (DP := getenv("DP", 1)) > 1:
+    if FSDP > 1:
+      device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
+      tokens = tokens.shard(device)
+    elif (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
-    if (MP := getenv("MP", 1)) > 1:
+    if FSDP == 1 and (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
       tokens = tokens.shard(device)
-    if DP == 1 and MP == 1: tokens = tokens.to(None)
+    if FSDP == 1 and DP == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     loss.backward()
@@ -1741,7 +1751,7 @@ def train_llama70b_lora():
     step_time = et - st
     mem_gb = GlobalCounters.mem_used / 1e9
     gflops = GlobalCounters.global_ops / 1e9 / max(dev_time, 1e-9)
-    mfu = ((6 * num_params * SEQLEN * GBS) / (max(dev_time, 1e-9) * max(getenv("DP", 1), getenv("MP", 1)) * 2.3e15)) * 100
+    mfu = ((6 * num_params * SEQLEN * GBS) / (max(dev_time, 1e-9) * max(getenv("DP", 1), getenv("MP", 1), FSDP) * 2.3e15)) * 100
     tqdm.write(
       f"{i+1:5} {step_time:.3f} s step, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, "
       f"{lr.item():.12f} LR, {grad_norm.item():.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
