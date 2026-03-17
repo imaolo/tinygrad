@@ -558,7 +558,7 @@ split_kernels = PatternMatcher([
 def is_remat(x): return x.src and x.base.op is Ops.AFTER and (call:=x.base.src[1]).op is Ops.CALL and cast(CallInfo, call.arg).rematerialize
 
 def do_remat(tsink: UOp) -> UOp:
-  if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
+  if not tsink.has_rematerialize_calls: return tsink
 
   # map remat afters to their consumers and the position in the consumer
   after_consumers_pos: dict[UOp, list[tuple[UOp, int]]] = {}
@@ -584,7 +584,7 @@ def do_remat(tsink: UOp) -> UOp:
   return tsink
 
 def add_remat_deps(tsink: UOp) -> UOp:
-  if not any(cast(CallInfo, uop.arg).rematerialize for uop in tsink.toposort() if uop.op is Ops.CALL): return tsink
+  if not tsink.has_rematerialize_calls: return tsink
 
   remat_rep: dict[UOp, UOp] = {}
   for c in tsink.toposort():

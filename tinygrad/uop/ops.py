@@ -938,6 +938,9 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     kernel = fxn(*placeholders).call(*contig_srcs, grad_fxn=grad_fxn, rematerialize=rematerialize)
     return [s.after(kernel) for s in contig_srcs]
 
+  @functools.cached_property
+  def has_rematerialize_calls(self) -> bool: return any(cast(CallInfo, uop.arg).rematerialize for uop in self.toposort() if uop.op is Ops.CALL)
+
 @dataclass(frozen=True)
 class KernelInfo:
   name: str = "test"            # name of the kernel
