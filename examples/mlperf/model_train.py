@@ -1353,13 +1353,7 @@ def train_llama3():
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape))
 
-  FSDP = getenv("FSDP", 0)
-  if FSDP:
-    fsdp_device = tuple(f"{Device.DEFAULT}:{i}" for i in range(FSDP))
-    for param in get_parameters(model):
-      param.fsdp_(fsdp_device)
-    vocab_mask.shard_(fsdp_device, axis=None)
-  if not FSDP and (DP := getenv("DP", 1)) > 1:
+  if (DP := getenv("DP", 1)) > 1:
     device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
     for v in get_parameters(model):
       v.shard_(device, axis=None)
@@ -1416,22 +1410,17 @@ def train_llama3():
 
   @TinyJit
   def minibatch(tokens:Tensor):
-    if FSDP:
-      tokens = tokens.to(None).shard(fsdp_device, 0)
-    elif (DP := getenv("DP", 1)) > 1:
+    if (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
     if (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
       tokens = tokens.shard(device)
-    if not FSDP and DP == 1 and MP == 1: tokens = tokens.to(None)
+    if DP == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     loss.backward()
-    if FSDP:
-      assert all(p.grad is g for p,g in zip(allgathered_params, grads))
-    else:
-      assert all(p.grad is g for p,g in zip(optim.params, grads))
+    assert all(p.grad is g for p,g in zip(optim.params, grads))
     loss_cpu = loss.flatten().float().to("CPU")
     Tensor.realize(loss_cpu, *grads)
     return loss_cpu
@@ -1453,15 +1442,13 @@ def train_llama3():
   @TinyJit
   @Tensor.train(False)
   def eval_step(tokens:Tensor):
-    if FSDP:
-      tokens = tokens.to(None).shard(fsdp_device, 0)
-    elif (DP := getenv("DP", 1)) > 1:
+    if (DP := getenv("DP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(DP))
       tokens = tokens.to(None).shard(device, 0)
     if (MP := getenv("MP", 1)) > 1:
       device = tuple(f"{Device.DEFAULT}:{i}" for i in range(MP))
       tokens = tokens.shard(device)
-    if not FSDP and DP == 1 and MP == 1: tokens = tokens.to(None)
+    if DP == 1 and MP == 1: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     return loss.flatten().float().to("CPU")
@@ -1498,7 +1485,6 @@ def train_llama3():
   step_times = []
   while i < MAX_STEPS:
     GlobalCounters.reset()
-    GlobalCounters.reset_peak()
     actual_gbs = GBS if i >= 2 else BS
     if getenv("TRAIN", 1):
       profile_marker(f"train @ {i}")
@@ -1534,13 +1520,11 @@ def train_llama3():
       sequences_seen += actual_gbs
 
       mem_gb = GlobalCounters.mem_used / 1e9
-      peak_per_dev = max(GlobalCounters.peak_mem_used_per_device.values()) / 1e9 if GlobalCounters.peak_mem_used_per_device else 0
       gflops = GlobalCounters.global_ops / 1e9 / dev_time
-      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * max(getenv("DP", 1), getenv("MP", 1), FSDP) * 2.3e15)) * 100
+      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * max(getenv("DP", 1), getenv("MP", 1)) * 2.3e15)) * 100
       tqdm.write(
           f"{i:5} {step_time:.3f} s step, {gbs_time:.3f} s gbs, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, " \
-          f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, peak {peak_per_dev:.2f} GB/dev, " \
-          f"{gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
+          f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
       if DEBUG >= 1: tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
 
       if WANDB:
