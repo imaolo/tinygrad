@@ -38,8 +38,7 @@ class Optimizer:
     """
     Zeroes the gradients of all the parameters.
     """
-    for param in self.params: param.grad = None
-    for param in self.shard_to_fsdp.values(): param.grad = None
+    for param in self.params + self.shard_to_fsdp.values(): param.grad = None
 
   def post_step(self):
     for sp, fp in self.shard_to_fsdp.items():
