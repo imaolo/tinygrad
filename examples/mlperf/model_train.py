@@ -1603,7 +1603,7 @@ def train_llama70b_lora():
     raise NotImplementedError("train_llama70b_lora currently supports FAKEDATA=1 only")
 
   default_model_path = Path(__file__).parents[2] / "weights" / "LLaMA-2" / "70B"
-  # model_path = ensure_pretrained_weights(Path(getenv("MODEL_PATH", default_model_path.as_posix())), auto_download=bool(getenv("DOWNLOAD_MODEL", 1)))
+  model_path = ensure_pretrained_weights(Path(getenv("MODEL_PATH", default_model_path.as_posix())), auto_download=bool(getenv("DOWNLOAD_MODEL", 1)))
 
   config = {}
   BS                 = config["BS"]                     = getenv("BS", 1)
@@ -1667,8 +1667,8 @@ def train_llama70b_lora():
     vocab_mask.shard_(device, axis=2).realize()
 
   print(f"loading pretrained weights from {model_path}")
-  # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
-  # load_train_state_dict(model, weights, strict=False, consume=True)
+  weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
+  load_train_state_dict(model, weights, strict=False, consume=True)
   freeze_non_lora_params(model)
 
   params = get_parameters(model)

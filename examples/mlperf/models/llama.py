@@ -116,7 +116,8 @@ def ensure_pretrained_weights(model_path:Path, repo_id:str=DEFAULT_LLAMA2_70B_RE
     )
   except Exception as e:
     raise RuntimeError(
-      f"failed to download {repo_id}. make sure you have accepted the Llama 2 license and authenticated with Hugging Face"
+      f"failed to download {repo_id}. If you are already logged in, this Hugging Face account likely does not have access yet. "
+      f"Request access at https://huggingface.co/{repo_id}, or set MODEL_PATH to a local Llama 2 70B checkpoint directory."
     ) from e
   if not has_supported_checkpoint_files(model_path):
     raise FileNotFoundError(f"download completed but no supported checkpoint files were found in {model_path}")
