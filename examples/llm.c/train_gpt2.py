@@ -198,8 +198,7 @@ if __name__ == "__main__":
     _, loss = model(x, y)
     optimizer.zero_grad()
     loss.backward()
-    optimizer.step()
-    return loss.realize()
+    return loss.realize(*optimizer.schedule_step())
 
   for i in range(args.num_iterations):
     GlobalCounters.reset()

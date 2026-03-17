@@ -46,7 +46,6 @@ class Optimizer:
 
   def step(self):
     Tensor.realize(*self.schedule_step())
-    self.post_step()
 
   def schedule_step(self) -> list[Tensor]:
     """
@@ -64,6 +63,7 @@ class Optimizer:
     else:
       updates, extra = self._step(self.params, [unwrap(t.grad) for t in self.params])
     for i, tt in enumerate(self.params): tt.assign(self._apply_update(tt, updates[i]))
+    self.post_step()
     return extra+self.params+self.buffers
 
   def _step(self, params:list[Tensor], grads:list[Tensor]) -> tuple[list[Tensor], list[Tensor]]: raise NotImplementedError
