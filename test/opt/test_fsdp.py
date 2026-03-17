@@ -404,22 +404,12 @@ class TestFSDPJit(unittest.TestCase):
   def test_fsdp_jit_lower_peak_than_nonfsdp_jit(self):
     """FSDP+JIT peak memory should be less than non-FSDP+JIT after JIT warmup."""
     _, peaks_nonfsdp = self._train_jit(use_fsdp=False, n_steps=4)
-    with Context(MEMORY_PLANNER=2):
-      _, peaks_fsdp = self._train_jit(use_fsdp=True, n_steps=4)
+    _, peaks_fsdp = self._train_jit(use_fsdp=True, n_steps=4)
     # compare post-warmup peaks (iteration 2+, after JIT capture)
     peak_nonfsdp = peaks_nonfsdp[-1]
     peak_fsdp = peaks_fsdp[-1]
     self.assertLess(peak_fsdp, peak_nonfsdp,
       f"FSDP+JIT peak {peak_fsdp/1e6:.1f} MB should be < non-FSDP+JIT peak {peak_nonfsdp/1e6:.1f} MB")
-
-  def test_fsdp_jit_memplan2_reduces_memory(self):
-    """MEMORY_PLANNER=2 should reduce FSDP+JIT peak memory vs MEMORY_PLANNER=1."""
-    _, peaks_mp1 = self._train_jit(use_fsdp=True, n_steps=4)
-    with Context(MEMORY_PLANNER=2):
-      _, peaks_mp2 = self._train_jit(use_fsdp=True, n_steps=4)
-    # compare post-warmup peaks
-    self.assertLess(peaks_mp2[-1], peaks_mp1[-1],
-      f"MEMORY_PLANNER=2 peak {peaks_mp2[-1]/1e6:.1f} MB should be < default peak {peaks_mp1[-1]/1e6:.1f} MB")
 
 @unittest.skipIf(not_support_multi_device(), "no multi")
 class TestFSDPUnevenJit(TestFSDPJit):

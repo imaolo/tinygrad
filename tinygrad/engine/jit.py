@@ -1,7 +1,7 @@
 from typing import TypeVar, Generic, Callable, cast, Any
 import functools, collections
 from tinygrad.tensor import Tensor
-from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, partition, unwrap, MEMORY_PLANNER
+from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, partition, unwrap
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType
 from tinygrad.uop.ops import UOp, Variable, sym_infer, Ops
@@ -324,7 +324,7 @@ class TinyJit(Generic[ReturnType]):
       self._jit_cache: list[ExecItem] = []
       self._buffer_replace: WeakKeyDictionary[Buffer, Buffer] = WeakKeyDictionary()
       # TODO: should we always disable the memory planner here? it must be off for prune
-      with Context(BEAM=getenv("JITBEAM", BEAM.value), MEMORY_PLANNER=int(not self.prune)):
+      with Context(BEAM=getenv("JITBEAM", BEAM.value), NO_MEMORY_PLANNER=int(self.prune)):
         capturing.append(self)
         try:
           ret = self.fxn(*args, **kwargs)
