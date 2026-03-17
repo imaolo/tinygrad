@@ -389,7 +389,6 @@ class TestFSDPJit(unittest.TestCase):
     losses, peaks = [], []
     for i in range(n_steps):
       GlobalCounters.reset()
-      GlobalCounters.reset_peak()
       loss = jit_step(x, y)
       Device[Device.DEFAULT].synchronize()
       peaks.append(max(GlobalCounters.peak_mem_used_per_device.values()) if GlobalCounters.peak_mem_used_per_device else 0)

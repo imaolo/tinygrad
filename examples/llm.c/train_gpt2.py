@@ -202,7 +202,6 @@ if __name__ == "__main__":
 
   for i in range(args.num_iterations):
     GlobalCounters.reset()
-    GlobalCounters.reset_peak()
     t0 = time.perf_counter()
     loss = step(x.contiguous(), y.contiguous())
     Device[Device.DEFAULT].synchronize()
