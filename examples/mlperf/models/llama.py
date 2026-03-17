@@ -9,7 +9,6 @@ from extra.models.llama import apply_rotary_emb, precompute_freqs_cis, convert_f
 from tinygrad.uop.ops import Ops
 
 LLAMA2_70B_ARGS = {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "vocab_size": 32000, "hidden_dim": 28672}
-DEFAULT_LLAMA2_70B_REPO = "meta-llama/Llama-2-70b-hf"
 
 NamedLinear = Callable[[str, int, int, bool], Any]
 
@@ -87,40 +86,6 @@ def load_pretrained_weights(model_path:Path, n_layers:int, n_heads:int, n_kv_hea
     weights = convert_base_from_huggingface(weights, n_layers, n_heads, n_kv_heads)
   weights = fix_bf16(weights)
   return fuse_qkv_weights(weights, n_layers) if fused_qkv else weights
-
-def has_supported_checkpoint_files(model_path:Path) -> bool:
-  if model_path.is_file():
-    return model_path.name.endswith((".safetensors", ".pth", ".bin", ".json"))
-  if not model_path.is_dir(): return False
-  return (model_path / "model.safetensors.index.json").exists() or (model_path / "model.safetensors").exists() or any(model_path.glob("consolidated.*.pth"))
-
-def ensure_pretrained_weights(model_path:Path, repo_id:str=DEFAULT_LLAMA2_70B_REPO, auto_download:bool=True) -> Path:
-  if has_supported_checkpoint_files(model_path): return model_path
-  if model_path.suffix:
-    raise FileNotFoundError(f"MODEL_PATH points to a missing file: {model_path}")
-  if not auto_download:
-    raise FileNotFoundError(f"no supported checkpoint files found at {model_path}")
-  try:
-    from huggingface_hub import snapshot_download
-  except ModuleNotFoundError as e:
-    raise RuntimeError("huggingface_hub is required to auto-download the Llama 2 70B checkpoint") from e
-
-  model_path.mkdir(parents=True, exist_ok=True)
-  print(f"downloading {repo_id} to {model_path}")
-  try:
-    snapshot_download(
-      repo_id=repo_id,
-      local_dir=model_path,
-      allow_patterns=["*.safetensors", "*.json", "*.model", "tokenizer.*"],
-      token=(token if (token := getenv("HF_TOKEN", "")) else None),
-    )
-  except Exception as e:
-    raise RuntimeError(
-      f"failed to download {repo_id}. make sure you have accepted the Llama 2 license and authenticated with Hugging Face"
-    ) from e
-  if not has_supported_checkpoint_files(model_path):
-    raise FileNotFoundError(f"download completed but no supported checkpoint files were found in {model_path}")
-  return model_path
 
 def load_train_state_dict(model, state_dict:dict[str, Tensor], strict:bool=False, consume:bool=True) -> None:
   for k, v in nn.state.get_state_dict(model).items():
