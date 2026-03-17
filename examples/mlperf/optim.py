@@ -22,9 +22,6 @@ class GradAccClipAdamW(Optimizer):
     to_realize = extra+self.params+self.buffers
 
     Tensor.realize(*to_realize)
-
-    self.post_step()
-
     return extra[-1]
 
   def _step(self, params:list[Tensor], grads:list[Tensor]) -> tuple[list[Tensor], list[Tensor]]:
