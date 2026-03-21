@@ -9,8 +9,8 @@ class LoRALinear:
     self.dropout = dropout
     self.scale = alpha / rank
     self.base_lin = base_linear(in_features, out_features, bias=bias)
-    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=self.base_lin.weight.dtype)
-    self.lora_b = Tensor.zeros(out_features, rank, dtype=self.base_lin.weight.dtype)
+    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=self.base_lin.weight.dtype, requires_grad=True)
+    self.lora_b = Tensor.zeros(out_features, rank, dtype=self.base_lin.weight.dtype, requires_grad=True)
 
   def __call__(self, x:Tensor) -> Tensor:
     lora = x.dropout(self.dropout).linear(self.lora_a.transpose()).linear(self.lora_b.transpose())
@@ -93,3 +93,21 @@ class Transformer:
     for layer in self.layers: h = layer(h, freqs_cis)
     logits = self.output(self.norm(h))
     return logits
+
+  def shard(self, device:tuple[str, ...], mp:bool=False):
+    from tinygrad.nn.state import get_parameters
+    if not mp:
+      for v in get_parameters(self): v.shard_(device, axis=None)
+    else:
+      # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
+      self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
+      self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
+      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
+      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self.attention_norm.shard_(device, axis=None).realize()
+      self.ffn_norm.shard_(device, axis=None).realize()
+      self.norm.weight.shard_(device, axis=None).realize()
+      self.tok_embeddings.weight.shard_(device, axis=0).realize()
+      self.output.weight.shard_(device, axis=0).realize()
+      self.freqs_cis.shard_(device, axis=None).realize()
