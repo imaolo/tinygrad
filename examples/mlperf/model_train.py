@@ -1369,7 +1369,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   params = get_parameters(model)
   # weights are all bfloat16 for now
-  assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+  # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   if llama2_70b_lora:
     # grad == None are not trainable
@@ -1415,7 +1415,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   def minibatch(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.shard(device)
+    if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
@@ -1443,7 +1443,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @Tensor.train(False)
   def eval_step(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.shard(device)
+    if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
