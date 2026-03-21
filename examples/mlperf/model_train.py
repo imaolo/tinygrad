@@ -1354,7 +1354,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   model = (FlatTransformer if not llama2_70b_lora else Transformer)(**model_params, max_context=SEQLEN)
 
-  if llama2_70b_lora:
+  if llama2_70b_lora and not getenv("FAKEDATA"):
     from tinygrad.nn.state import get_state_dict, safe_save, safe_load, load_state_dict
     weights_path = Path(__file__).parent / "llama2_70b_weights"
     weights_path.mkdir(parents=True, exist_ok=True)
@@ -1370,6 +1370,12 @@ def train_llama3(llama2_70b_lora:bool=False):
   params = get_parameters(model)
   # weights are all bfloat16 for now
   assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+
+  if llama2_70b_lora:
+    # grad == None are not trainable
+    for p in params:
+      if not p.requires_grad:
+        p.requires_grad_(False)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
@@ -1387,7 +1393,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
 
   is_offload_optim = bool(getenv("OFFLOAD_OPTIM"))
-  is_fake_offload = Device.DEFAULT == "NULL"
+  is_fake_offload = Device.DEFAULT == "CPU"
   optim_device = ("CPU" if not is_fake_offload else "NULL:99") if is_offload_optim else None
   optim = GradAccClipAdamW(params, lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
                            eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
@@ -1515,7 +1521,8 @@ def train_llama3(llama2_70b_lora:bool=False):
       tqdm.write(
           f"{i:5} {step_time:.3f} s step, {gbs_time:.3f} s gbs, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, " \
           f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
-      if DEBUG >= 1: tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
+      tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
+      tqdm.write("  peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
       if WANDB:
         wandb.log({
