@@ -1352,7 +1352,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
-  model = (FlatTransformer if not llama2_70b_lora else Transformer)(**model_params, max_context=SEQLEN)
+  model = (FlatTransformer if getenv("FLAT", 1) else Transformer)(**model_params, max_context=SEQLEN)
 
   if llama2_70b_lora and not getenv("FAKEDATA"):
     from tinygrad.nn.state import get_state_dict, safe_save, safe_load, load_state_dict
