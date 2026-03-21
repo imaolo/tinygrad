@@ -1283,11 +1283,18 @@ def train_bert():
         MLLOGGER.start(key=mllog_constants.BLOCK_START, value=None, metadata={"first_epoch_num": 1, "epoch_num": 1, "epoch_count": 1, "samples_count": i * GBS, "step_num": i, "first_step_num": i+1})
         previous_step = i
 
-def train_llama3():
+LLAMA2_70B_ARGS = {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "vocab_size": 32000, "hidden_dim": 28672}
+LLAMA2_70B_REPO_ID = "meta-llama/Llama-2-70b-hf"
+def train_llama2_70b_lora():
+  train_llama3(True)
+
+def train_llama3(llama2_70b_lora:bool=False):
   from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad
+  from examples.mlperf.models.llama import Transformer
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
+  from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
 
   BENCHMARK = getenv("BENCHMARK")
 
@@ -1334,18 +1341,31 @@ def train_llama3():
     wandb_args = {"id": wandb_id, "resume": "must"} if (wandb_id := getenv("WANDB_RESUME", "")) else {}
     wandb.init(config=config, **wandb_args, project="MLPerf-LLaMA3")
 
-  model_params = MODEL_PARAMS[getenv("LLAMA3_SIZE", "8B")]["args"]
+  model_params = MODEL_PARAMS[getenv("LLAMA3_SIZE", "8B")]["args"] if not llama2_70b_lora else LLAMA2_70B_ARGS
   # vocab_size from the mixtral tokenizer
   if not SMALL: model_params |= {"vocab_size": 32000}
   real_vocab_size = model_params['vocab_size']
-  if (llama_layers:=getenv("LLAMA_LAYERS")) != 0: model_params['n_layers'] = llama_layers
+  if (llama_layers:=getenv("LLAMA_LAYERS")) != 0 and not llama2_70b_lora: model_params['n_layers'] = llama_layers
   print(f"model parameters: {model_params}")
 
   # pad vocab
-  if (MP := getenv("MP", 1)) > 1: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
+  if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
-  model = FlatTransformer(**model_params, max_context=SEQLEN)
+  model = (FlatTransformer if not llama2_70b_lora else Transformer)(**model_params, max_context=SEQLEN)
+
+  if llama2_70b_lora:
+    from tinygrad.nn.state import get_state_dict, safe_save, safe_load, load_state_dict
+    weights_path = Path(__file__).parent / "llama2_70b_weights"
+    weights_path.mkdir(parents=True, exist_ok=True)
+    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path)
+  
+    print("downloaded the weights")
+    import sys
+    sys.exit()
+    # load_train_state_dict(model, weights, strict=False, consume=True)
+    # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
+    print(f"loading pretrained weights from {weights_path}")
 
   params = get_parameters(model)
   # weights are all bfloat16 for now

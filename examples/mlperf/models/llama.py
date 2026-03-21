@@ -1,6 +1,20 @@
 from tinygrad import Tensor, nn
 from tinygrad.helpers import getenv
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
+import functools, math
+
+class LoRALinear:
+  def __init__(self, in_features:int, out_features:int, bias:bool=False, rank:int=16, alpha:float=32.0, dropout:float=0.1,
+               base_linear=nn.Linear):
+    self.dropout = dropout
+    self.scale = alpha / rank
+    self.base_lin = base_linear(in_features, out_features, bias=bias)
+    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=self.base_lin.weight.dtype)
+    self.lora_b = Tensor.zeros(out_features, rank, dtype=self.base_lin.weight.dtype)
+
+  def __call__(self, x:Tensor) -> Tensor:
+    lora = x.dropout(self.dropout).linear(self.lora_a.transpose()).linear(self.lora_b.transpose())
+    return self.base_lin(x) + (lora * self.scale)
 
 class Attention:
   def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear):
@@ -8,6 +22,7 @@ class Attention:
     self.n_kv_heads = n_kv_heads if n_kv_heads is not None else n_heads # n_kv_heads != n_heads implies MQA [arxiv/2307.09288, A.2.1]
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
+    linear = linear if not getenv("LORA") else functools.partial(LoRALinear, base_linear=linear)
 
     if getenv("WQKV"):
       self.wqkv = linear(dim, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2, bias=False)
