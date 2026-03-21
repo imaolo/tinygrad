@@ -140,6 +140,8 @@ class Buffer:
       if not self.device.startswith("DISK") and (self.options is None or self.options.external_ptr is None):
         GlobalCounters.mem_used += self.nbytes
         GlobalCounters.mem_used_per_device[self.device] += self.nbytes
+        GlobalCounters.peak_mem_used = max(GlobalCounters.mem_used, GlobalCounters.peak_mem_used)
+        GlobalCounters.peak_mem_used_per_device[self.device] = max(GlobalCounters.mem_used_per_device[self.device], GlobalCounters.peak_mem_used_per_device[self.device])
       if PROFILE: Buffer.profile_events.append(ProfilePointEvent(self.device, "alloc", self.trace_num, {"dtype":self.dtype, "sz":self.size}))
     return self
   def deallocate(self):
