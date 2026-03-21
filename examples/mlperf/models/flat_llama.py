@@ -140,6 +140,11 @@ class FlatTransformer:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
       self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
+      if self.lora_a is not None:
+        self.lora_a.shard_(device, axis=None).realize()
+        self.lora_b.shard_(device, axis=1).realize()
+        self.lora_a_wo.shard_(device, axis=2).realize()
+        self.lora_b_wo.shard_(device, axis=None).realize()
       self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
       self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
       self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
