@@ -166,12 +166,17 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
 
   def toposort(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     if (cacheable:=(gate is None or gate.__closure__ is None)) and (val:=_toposort_cache.get(key:=(self, gate, enter_calls), None)) is not None:
-      if val == True:
+      if val == True and self.op is not Ops.SINK:
         return self._toposort_subgraph_cache_hit(gate, enter_calls)
+      if self.op is Ops.SINK:
+        return self._toposort_cached_sink(gate, enter_calls)
       return self._toposort_top_level_cache_hit(gate, enter_calls)
-    ret = self._toposort_top_level_cache_miss(gate, enter_calls)
-    if cacheable: _toposort_cache[key] = ret
-    return ret
+    if not cacheable and False:
+      return self._no_cache_toposort(gate, enter_calls)
+    else:
+      ret = self._toposort_top_level_cache_miss(gate, enter_calls)
+      if cacheable: _toposort_cache[key] = ret
+      return ret
 
   def _toposort_subgraph_cache_hit(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     cacheable = gate is None or gate.__closure__ is None
@@ -268,9 +273,31 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
           #   _toposort_cache[(node, gate, enter_calls)] = True
     return cache
 
-  def _toposort(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
-    assert False
+  def _toposort_cached_sink(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     cacheable = gate is None or gate.__closure__ is None
+    cache: dict[UOp, None] = {}
+    stack: list[tuple[UOp, bool]] = [(self, False)] # each stack entry is (node, visited_flag)
+    while stack:
+      node, visited = stack.pop()
+      if node in cache: continue
+      # the graph was already hit...., we wont hit another subgraph, here only for profile accounting
+      if False and cacheable and (node, gate, enter_calls) in _toposort_cache:
+        subgraph_ret = self._toposort_subgraph_cache_hit_beneath_root(gate, enter_calls)
+        # TODO what to do with the subgrpah _ret?
+      else:
+        if not visited:
+          if gate is None or gate(node):
+            stack.append((node, True))  # push node back on stack to process after its srcs
+            for s in reversed(node.src if enter_calls or node.op is not Ops.CALL else node.src[1:]):
+              stack.append((s, False)) # push srcs on the stack
+        else:
+          cache[node] = None # second time i'm seeing this node, add it to returned toposort
+          # we have already been here, no need to recache
+          # if cacheable: 
+          #   _toposort_cache[(node, gate, enter_calls)] = True
+    return cache
+
+  def _no_cache_toposort(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     cache: dict[UOp, None] = {}
     stack: list[tuple[UOp, bool]] = [(self, False)] # each stack entry is (node, visited_flag)
     while stack:
@@ -283,8 +310,6 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
             stack.append((s, False)) # push srcs on the stack
       else:
         cache[node] = None # second time i'm seeing this node, add it to returned toposort
-        if cacheable: 
-          _toposort_cache[(node, gate, enter_calls)] = True
     return cache
 
   def topovisit(self, visitor:Callable[[UOp], T], cache:dict[UOp, T]) -> T:
