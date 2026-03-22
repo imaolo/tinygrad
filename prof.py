@@ -108,5 +108,5 @@ if __name__ == "__main__":
     print_summary(rows)
     print_table(rows, "tottime", "Top functions by exclusive time (tottime)", limit=60)
     print_table(rows, "cumtime", "Top functions by inclusive time (cumtime)", limit=60)
-    print_table(rows, "tottime", "Top USER functions by exclusive time (tottime)", limit=60, only_kind="user")
-    print_table(rows, "cumtime", "Top USER functions by inclusive time (cumtime)", limit=60, only_kind="user")
+    print_table(rows, "tottime", "Top USER functions by exclusive time (tottime)", limit=1000, only_kind="user")
+    print_table(rows, "cumtime", "Top USER functions by inclusive time (cumtime)", limit=1000, only_kind="user")
