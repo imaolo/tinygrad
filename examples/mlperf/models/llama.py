@@ -1,20 +1,17 @@
 from tinygrad import Tensor, nn
-from tinygrad.helpers import getenv
+from tinygrad.dtype import DType
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
-import functools, math
+import math
 
-class LoRALinear:
-  def __init__(self, in_features:int, out_features:int, bias:bool=False, rank:int=16, alpha:float=32.0, dropout:float=0.1,
-               base_linear=nn.Linear):
+class LoRaLinear:
+  def __init__(self, in_features:int, out_features:int, dtype:str|DType, rank:int=16, alpha:float=32.0, dropout:float=0.1):
     self.dropout = dropout
     self.scale = alpha / rank
-    self.base_lin = base_linear(in_features, out_features, bias=bias)
-    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=self.base_lin.weight.dtype, requires_grad=True)
-    self.lora_b = Tensor.zeros(out_features, rank, dtype=self.base_lin.weight.dtype, requires_grad=True)
+    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=dtype, requires_grad=True)
+    self.lora_b = Tensor.zeros(out_features, rank, dtype=dtype, requires_grad=True)
 
   def __call__(self, x:Tensor) -> Tensor:
-    lora = x.dropout(self.dropout).linear(self.lora_a.transpose()).linear(self.lora_b.transpose())
-    return self.base_lin(x) + (lora * self.scale)
+    return x.dropout(self.dropout).linear(self.lora_a.transpose()).linear(self.lora_b.transpose()) * self.scale
 
 class Attention:
   def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear, fuse_wqkv:bool=False, use_lora:bool=False):
@@ -23,26 +20,39 @@ class Attention:
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
     self.fuse_wqkv = fuse_wqkv
-    linear = linear if not use_lora else functools.partial(LoRALinear, base_linear=linear)
+    self.use_lora = use_lora
 
     if self.fuse_wqkv:
-      self.wqkv = linear(dim, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2, bias=False)
+      self.wqkv = linear(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2), bias=False)
+      if self.use_lora:
+        self.wqkv_lora = LoRaLinear(dim, wqkv_dim, self.wqkv.weight.dtype)
     else:
-      self.wq = linear(dim, self.n_heads * self.head_dim, bias=False)
-      self.wk = linear(dim, self.n_kv_heads * self.head_dim, bias=False)
-      self.wv = linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+      self.wq = linear(dim, wq_dim:=(self.n_heads * self.head_dim), bias=False)
+      self.wk = linear(dim, wk_dim:=(self.n_kv_heads * self.head_dim), bias=False)
+      self.wv = linear(dim, wv_dim:=(self.n_kv_heads * self.head_dim), bias=False)
+      if self.use_lora:
+        self.wq_lora = LoRaLinear(dim, wq_dim, self.wq.weight.dtype)
+        self.wk_lora = LoRaLinear(dim, wk_dim, self.wk.weight.dtype)
+        self.wv_lora = LoRaLinear(dim, wv_dim, self.wv.weight.dtype)
 
-    self.wo = linear(self.n_heads * self.head_dim, dim, bias=False)
+    self.wo = linear(wo_dim:=(self.n_heads * self.head_dim), dim, bias=False)
+    if self.use_lora:
+      self.wo_lora = LoRaLinear(wo_dim, dim, self.wo.weight.dtype)
 
+  
   def __call__(self, x:Tensor, freqs_cis:Tensor) -> Tensor:
     if self.fuse_wqkv:
       xqkv = self.wqkv(x)
+      if self.use_lora:
+        xqkv = xqkv + self.wqkv_lora(x)
       xqkv = xqkv.reshape(xqkv.shape[0], xqkv.shape[1], self.n_kv_heads, self.n_rep + 2, self.head_dim)
       xq = xqkv[:, :, :, :self.n_rep].reshape(xqkv.shape[0], xqkv.shape[1], -1)
       xk = xqkv[:, :, :, self.n_rep:self.n_rep+1].reshape(xqkv.shape[0], xqkv.shape[1], -1)
       xv = xqkv[:, :, :, self.n_rep+1:self.n_rep+2].reshape(xqkv.shape[0], xqkv.shape[1], -1)
     else:
       xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+      if self.use_lora:
+        xq, xk, xv = xq + self.wq_lora(x), xk + self.wk_lora(x), xv + self.wv_lora(x)
 
     xq = xq.reshape(xq.shape[0], xq.shape[1], self.n_heads, self.head_dim)
     xk = xk.reshape(xk.shape[0], xk.shape[1], self.n_kv_heads, self.head_dim)
@@ -55,7 +65,10 @@ class Attention:
     attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True).transpose(1, 2)
 
     attn = attn.reshape(bsz, seqlen, -1)
-    return self.wo(attn)
+    wo_out = self.wo(attn)
+    if self.use_lora:
+      wo_out = wo_out + self.wo_lora(attn)
+    return wo_out
 
 class FeedForward:
   def __init__(self, dim:int, hidden_dim:int, linear=nn.Linear):

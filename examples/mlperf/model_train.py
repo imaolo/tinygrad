@@ -1375,15 +1375,20 @@ def train_llama3(llama2_70b_lora:bool=False):
       from examples.mlperf.models.test_flat_llama import copy_weights as copy_weights_flat
       from examples.mlperf.models.llama import copy_weights_fused
 
+      t_args = model_params|dict(max_context=SEQLEN)
       state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
       state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
       lsd_args = dict(state_dict=state_dict, realize=False, strict=False)
+
+      # ensure all weights will be consumed
+      ref_model = Transformer(**t_args, fuse_wqkv=False, use_lora=True)
+      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
+        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
       if not FUSE_WQKV:
         load_state_dict(model, **lsd_args)
       else:
         # create the unfused, non-flat model, and load the weights
-        t_args = model_params|dict(max_context=SEQLEN)
         load_state_dict(unfused_model:=Transformer(**t_args, fuse_wqkv=False), **lsd_args)
   
         # copy weights into fused nonflat or flat model (flat model is only fused)
@@ -1395,7 +1400,6 @@ def train_llama3(llama2_70b_lora:bool=False):
           del fused_model
         del unfused_model
       del state_dict, lsd_args
-
   params = get_parameters(model)
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
