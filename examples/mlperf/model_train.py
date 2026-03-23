@@ -1294,7 +1294,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
-  from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
 
   BENCHMARK = getenv("BENCHMARK")
 
@@ -1352,20 +1351,53 @@ def train_llama3(llama2_70b_lora:bool=False):
   if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
-  model = (FlatTransformer if getenv("FLAT", 1) else Transformer)(**model_params, max_context=SEQLEN)
+  model = (FlatTransformer if getenv("FLAT", 1) else Transformer)(**model_params, max_context=SEQLEN, use_lora=getenv("LORA"))
 
-  if llama2_70b_lora and not getenv("FAKEDATA"):
+  print("created the model - ", model)
+
+  if llama2_70b_lora:
+    print("loading llama2_70b_lora")
     from tinygrad.nn.state import get_state_dict, safe_save, safe_load, load_state_dict
     weights_path = Path(__file__).parent / "llama2_70b_weights"
-    weights_path.mkdir(parents=True, exist_ok=True)
-    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path)
+    if getenv("DOWNLOAD_WEIGHTS", 0):
+      print("downloaded the weights")
+      weights_path.mkdir(parents=True, exist_ok=True)
+      snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
   
-    print("downloaded the weights")
-    import sys
-    sys.exit()
     # load_train_state_dict(model, weights, strict=False, consume=True)
     # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
-    print(f"loading pretrained weights from {weights_path}")
+
+
+    if getenv("FLAT", 1):
+      print(f"loading pretrained weights from {weights_path}")
+      from extra.models.llama import convert_from_huggingface
+      from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
+      from examples.mlperf.models.test_flat_llama import copy_weights
+      from examples.mlperf.models.llama import copy_weights_fused
+
+      state_dict:dict = {}
+      for weight_file in weights_path.glob('*.safetensors'):
+        state_dict.update(safe_load(weight_file))
+      state_dict = convert_from_huggingface(
+        state_dict,
+        model_params["n_layers"],
+        model_params["n_heads"],
+        model_params["n_kv_heads"],
+      )
+
+      ref_model = Transformer(**model_params, max_context=SEQLEN, fuse_wqkv=False, use_lora=False)
+      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
+        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
+
+      load_state_dict(ref_model, state_dict, realize=False, strict=False)
+
+      fused_model = Transformer(**model_params, max_context=SEQLEN, fuse_wqkv=True, use_lora=False)
+
+      copy_weights_fused(fused_model, ref_model)
+      
+      print("converting from normal to flat")
+      copy_weights(model, fused_model)
+
 
   params = get_parameters(model)
   # weights are all bfloat16 for now

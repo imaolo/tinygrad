@@ -3,8 +3,8 @@
 export PYTHONPATH="."
 export MODEL="llama2_70b_lora"
 export FAKEDATA=1
-export LORA=1
-export DEFAULT_FLOAT="fp8e4m3" OPTIM_DTYPE="fp8e4m3"
+export LORA=0
+export DEFAULT_FLOAT="bfloat16" OPTIM_DTYPE="bfloat16"
 export DEV=NULL
 export NULL_ALLOW_COPYOUT=1
 export BS=2

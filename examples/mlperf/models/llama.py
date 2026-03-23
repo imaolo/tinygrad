@@ -17,14 +17,15 @@ class LoRALinear:
     return self.base_lin(x) + (lora * self.scale)
 
 class Attention:
-  def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear):
+  def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear, fuse_wqkv:bool=False, use_lora:bool=False):
     self.n_heads = n_heads
     self.n_kv_heads = n_kv_heads if n_kv_heads is not None else n_heads # n_kv_heads != n_heads implies MQA [arxiv/2307.09288, A.2.1]
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
-    linear = linear if not getenv("LORA") else functools.partial(LoRALinear, base_linear=linear)
+    self.fuse_wqkv = fuse_wqkv
+    linear = linear if not use_lora else functools.partial(LoRALinear, base_linear=linear)
 
-    if getenv("WQKV"):
+    if self.fuse_wqkv:
       self.wqkv = linear(dim, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2, bias=False)
     else:
       self.wq = linear(dim, self.n_heads * self.head_dim, bias=False)
@@ -34,7 +35,7 @@ class Attention:
     self.wo = linear(self.n_heads * self.head_dim, dim, bias=False)
 
   def __call__(self, x:Tensor, freqs_cis:Tensor) -> Tensor:
-    if getenv("WQKV"):
+    if self.fuse_wqkv:
       xqkv = self.wqkv(x)
       xqkv = xqkv.reshape(xqkv.shape[0], xqkv.shape[1], self.n_kv_heads, self.n_rep + 2, self.head_dim)
       xq = xqkv[:, :, :, :self.n_rep].reshape(xqkv.shape[0], xqkv.shape[1], -1)
@@ -68,8 +69,8 @@ class FeedForward:
     return self.w2(w1 * w3)
 
 class TransformerBlock:
-  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_kv_heads:int|None, norm_eps:float, linear=nn.Linear):
-    self.attention = Attention(dim, n_heads, n_kv_heads, linear)
+  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_kv_heads:int|None, norm_eps:float, linear=nn.Linear, fuse_wqkv:bool=False, use_lora:bool=False):
+    self.attention = Attention(dim, n_heads, n_kv_heads, linear, fuse_wqkv, use_lora)
     self.feed_forward = FeedForward(dim, hidden_dim, linear)
     self.attention_norm = nn.RMSNorm(dim, norm_eps)
     self.ffn_norm = nn.RMSNorm(dim, norm_eps)
@@ -80,8 +81,8 @@ class TransformerBlock:
 
 class Transformer:
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None,
-               rope_theta:int=10000, max_context:int=1024, linear=nn.Linear, embedding=nn.Embedding):
-    self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, linear) for _ in range(n_layers)]
+               rope_theta:int=10000, max_context:int=1024, linear=nn.Linear, embedding=nn.Embedding, fuse_wqkv:bool=True, use_lora:bool=False):
+    self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, linear, fuse_wqkv, use_lora) for _ in range(n_layers)]
     self.norm = nn.RMSNorm(dim, norm_eps)
     self.tok_embeddings = embedding(vocab_size, dim)
     self.output = nn.Linear(dim, vocab_size, bias=False) if embedding == nn.Embedding else linear(dim, vocab_size, bias=False)
@@ -111,3 +112,33 @@ class Transformer:
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
       self.output.weight.shard_(device, axis=0).realize()
       self.freqs_cis.shard_(device, axis=None).realize()
+
+def _fuse_qkv(q:Tensor, k:Tensor, v:Tensor, n_heads:int, n_kv_heads:int) -> Tensor:
+  head_dim = q.shape[0] // n_heads
+  n_rep = n_heads // n_kv_heads
+  in_dim = q.shape[1]
+  q = q.reshape(n_kv_heads, n_rep, head_dim, in_dim)
+  k = k.reshape(n_kv_heads, 1, head_dim, in_dim)
+  v = v.reshape(n_kv_heads, 1, head_dim, in_dim)
+  return q.cat(k, v, dim=1).reshape(-1, in_dim)
+
+def copy_weights_fused(fused_model: Transformer, unfused_model: Transformer) -> None:
+  from tinygrad.nn.state import get_state_dict
+
+  for dst_layer, src_layer in zip(fused_model.layers, unfused_model.layers):
+    dst_layer.attention.wqkv.weight.assign(_fuse_qkv(
+      src_layer.attention.wq.weight.cast(dst_layer.attention.wqkv.weight.dtype),
+      src_layer.attention.wk.weight.cast(dst_layer.attention.wqkv.weight.dtype),
+      src_layer.attention.wv.weight.cast(dst_layer.attention.wqkv.weight.dtype),
+      src_layer.attention.n_heads, src_layer.attention.n_kv_heads
+    ))
+    dst_layer.attention.wo.weight.assign(src_layer.attention.wo.weight.cast(dst_layer.attention.wo.weight.dtype))
+    dst_layer.feed_forward.w1.weight.assign(src_layer.feed_forward.w1.weight.cast(dst_layer.feed_forward.w1.weight.dtype))
+    dst_layer.feed_forward.w2.weight.assign(src_layer.feed_forward.w2.weight.cast(dst_layer.feed_forward.w2.weight.dtype))
+    dst_layer.feed_forward.w3.weight.assign(src_layer.feed_forward.w3.weight.cast(dst_layer.feed_forward.w3.weight.dtype))
+    dst_layer.attention_norm.weight.assign(src_layer.attention_norm.weight.cast(dst_layer.attention_norm.weight.dtype))
+    dst_layer.ffn_norm.weight.assign(src_layer.ffn_norm.weight.cast(dst_layer.ffn_norm.weight.dtype))
+
+  fused_model.norm.weight.assign(unfused_model.norm.weight.cast(fused_model.norm.weight.dtype))
+  fused_model.tok_embeddings.weight.assign(unfused_model.tok_embeddings.weight.cast(fused_model.tok_embeddings.weight.dtype))
+  fused_model.output.weight.assign(unfused_model.output.weight.cast(fused_model.output.weight.dtype))
