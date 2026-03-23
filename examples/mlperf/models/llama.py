@@ -20,39 +20,38 @@ class Attention:
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
     self.fuse_wqkv = fuse_wqkv
-    self.use_lora = use_lora
+    self.lora_map = {} if use_lora else None
 
     if self.fuse_wqkv:
-      self.wqkv = linear(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2), bias=False)
-      if self.use_lora:
-        self.wqkv_lora = LoRaLinear(dim, wqkv_dim, self.wqkv.weight.dtype)
+      self.wqkv = self.create_linear(linear, dim, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2, bias=False)
     else:
-      self.wq = linear(dim, wq_dim:=(self.n_heads * self.head_dim), bias=False)
-      self.wk = linear(dim, wk_dim:=(self.n_kv_heads * self.head_dim), bias=False)
-      self.wv = linear(dim, wv_dim:=(self.n_kv_heads * self.head_dim), bias=False)
-      if self.use_lora:
-        self.wq_lora = LoRaLinear(dim, wq_dim, self.wq.weight.dtype)
-        self.wk_lora = LoRaLinear(dim, wk_dim, self.wk.weight.dtype)
-        self.wv_lora = LoRaLinear(dim, wv_dim, self.wv.weight.dtype)
+      self.wq = self.create_linear(linear, dim, self.n_heads * self.head_dim, bias=False)
+      self.wk = self.create_linear(linear, dim, self.n_kv_heads * self.head_dim, bias=False)
+      self.wv = self.create_linear(linear, dim, self.n_kv_heads * self.head_dim, bias=False)
 
-    self.wo = linear(wo_dim:=(self.n_heads * self.head_dim), dim, bias=False)
-    if self.use_lora:
-      self.wo_lora = LoRaLinear(wo_dim, dim, self.wo.weight.dtype)
-
+    self.wo = self.create_linear(linear, self.n_heads * self.head_dim, dim, bias=False)
   
+  def create_linear(self, linear, in_features:int, out_features:int, bias:bool=True):
+    lin = linear(in_features, out_features, bias)
+    if self.lora_map is not None:
+      self.lora_map[lin] = LoRaLinear(in_features, out_features, lin.weight.dtype)
+    return lin
+
+  def run_linear(self, lin, x:Tensor) -> Tensor:
+    out = lin(x)
+    if self.lora_map is not None:
+      out = out + self.lora_map[lin](x)
+    return out
+
   def __call__(self, x:Tensor, freqs_cis:Tensor) -> Tensor:
     if self.fuse_wqkv:
-      xqkv = self.wqkv(x)
-      if self.use_lora:
-        xqkv = xqkv + self.wqkv_lora(x)
+      xqkv = self.run_linear(self.wqkv, x)
       xqkv = xqkv.reshape(xqkv.shape[0], xqkv.shape[1], self.n_kv_heads, self.n_rep + 2, self.head_dim)
       xq = xqkv[:, :, :, :self.n_rep].reshape(xqkv.shape[0], xqkv.shape[1], -1)
       xk = xqkv[:, :, :, self.n_rep:self.n_rep+1].reshape(xqkv.shape[0], xqkv.shape[1], -1)
       xv = xqkv[:, :, :, self.n_rep+1:self.n_rep+2].reshape(xqkv.shape[0], xqkv.shape[1], -1)
     else:
-      xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-      if self.use_lora:
-        xq, xk, xv = xq + self.wq_lora(x), xk + self.wk_lora(x), xv + self.wv_lora(x)
+      xq, xk, xv = self.run_linear(self.wq, x), self.run_linear(self.wk, x), self.run_linear(self.wv, x)
 
     xq = xq.reshape(xq.shape[0], xq.shape[1], self.n_heads, self.head_dim)
     xk = xk.reshape(xk.shape[0], xk.shape[1], self.n_kv_heads, self.head_dim)
@@ -65,10 +64,7 @@ class Attention:
     attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True).transpose(1, 2)
 
     attn = attn.reshape(bsz, seqlen, -1)
-    wo_out = self.wo(attn)
-    if self.use_lora:
-      wo_out = wo_out + self.wo_lora(attn)
-    return wo_out
+    return self.run_linear(self.wo, attn)
 
 class FeedForward:
   def __init__(self, dim:int, hidden_dim:int, linear=nn.Linear):
