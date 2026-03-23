@@ -7,11 +7,11 @@ class LoRA:
   def __init__(self, in_features:int, out_features:int, dtype:str|DType, rank:int=16, alpha:float=32.0, dropout:float=0.1):
     self.dropout = dropout
     self.scale = alpha / rank
-    self.lora_a = Tensor.kaiming_uniform(rank, in_features, a=math.sqrt(5), dtype=dtype, requires_grad=True)
-    self.lora_b = Tensor.zeros(out_features, rank, dtype=dtype, requires_grad=True)
+    self.lora_a = Tensor.kaiming_uniform(in_features, rank, a=math.sqrt(5), dtype=dtype, requires_grad=True)
+    self.lora_b = Tensor.zeros(rank, out_features, dtype=dtype, requires_grad=True)
 
   def __call__(self, x:Tensor) -> Tensor:
-    return x.dropout(self.dropout).linear(self.lora_a.transpose()).linear(self.lora_b.transpose()) * self.scale
+    return x.dropout(self.dropout).linear(self.lora_a).linear(self.lora_b) * self.scale
 
 class Attention:
   def __init__(self, dim:int, n_heads:int, n_kv_heads:int|None=None, linear=nn.Linear, fuse_wqkv:bool=False, use_lora:bool=False):
