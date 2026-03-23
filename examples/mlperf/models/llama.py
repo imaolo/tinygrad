@@ -3,7 +3,7 @@ from tinygrad.dtype import DType
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
 import math
 
-class LoRaLinear:
+class LoRA:
   def __init__(self, in_features:int, out_features:int, dtype:str|DType, rank:int=16, alpha:float=32.0, dropout:float=0.1):
     self.dropout = dropout
     self.scale = alpha / rank
@@ -34,7 +34,7 @@ class Attention:
   def create_linear(self, linear, in_features:int, out_features:int, bias:bool=True):
     lin = linear(in_features, out_features, bias)
     if self.lora_map is not None:
-      self.lora_map[lin] = LoRaLinear(in_features, out_features, lin.weight.dtype)
+      self.lora_map[lin] = LoRA(in_features, out_features, lin.weight.dtype)
     return lin
 
   def run_linear(self, lin, x:Tensor) -> Tensor:
