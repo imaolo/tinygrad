@@ -40,8 +40,9 @@ def rmsnorm(x_in:Tensor, eps:float):
   return x.cast(x_in.dtype)
 
 class FlatTransformer:
-  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None,
-               rope_theta:int=10000, max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1, use_lora:bool=False):
+  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
+               max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1, use_lora:bool=False, fuse_wqkv:bool=True):
+    assert fuse_wqkv, "non-fused unsupported"
     self.vocab_size = vocab_size
     self.n_layers = n_layers
     self.n_heads = n_heads
