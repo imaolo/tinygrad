@@ -1367,8 +1367,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     # load_train_state_dict(model, weights, strict=False, consume=True)
     # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
 
-
-    if getenv("FLAT", 1):
+    if getenv("FLAT", 1) and getenv("LOAD_MODEL", 1):
       print(f"loading pretrained weights from {weights_path}")
       from extra.models.llama import convert_from_huggingface
       from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
@@ -1393,14 +1392,18 @@ def train_llama3(llama2_70b_lora:bool=False):
 
       fused_model = Transformer(**model_params, max_context=SEQLEN, fuse_wqkv=True, use_lora=False)
 
+      print("converting from normal llama to fused llama")
       copy_weights_fused(fused_model, ref_model)
       
-      print("converting from normal to flat")
+      print("converting from normal fused llama to flat fused llama")
       copy_weights(model, fused_model)
+
+      del state_dict
+      del ref_model
+      del fused_model
 
 
   params = get_parameters(model)
-  # weights are all bfloat16 for now
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   if llama2_70b_lora:
