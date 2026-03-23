@@ -1351,7 +1351,8 @@ def train_llama3(llama2_70b_lora:bool=False):
   if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
-  model = (FlatTransformer if getenv("FLAT", 1) else Transformer)(**model_params, max_context=SEQLEN, use_lora=getenv("LORA"))
+  model = (FlatTransformer if (FLAT:=getenv("FLAT", 1)) else Transformer)\
+    (**model_params, max_context=SEQLEN, use_lora=getenv("LORA"), fuse_wqkv=(FUSE_WQKV:=getenv("FUSE_WQKV", 1)))
 
   print("created the model - ", model)
 
@@ -1367,50 +1368,39 @@ def train_llama3(llama2_70b_lora:bool=False):
     # load_train_state_dict(model, weights, strict=False, consume=True)
     # weights = load_pretrained_weights(model_path, model_params["n_layers"], model_params["n_heads"], model_params["n_kv_heads"], fused_qkv=True)
 
-    if getenv("FLAT", 1) and getenv("LOAD_MODEL", 1):
+    if getenv("LOAD_MODEL", 1):
       print(f"loading pretrained weights from {weights_path}")
       from extra.models.llama import convert_from_huggingface
       from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
-      from examples.mlperf.models.test_flat_llama import copy_weights
+      from examples.mlperf.models.test_flat_llama import copy_weights as copy_weights_flat
       from examples.mlperf.models.llama import copy_weights_fused
 
-      state_dict:dict = {}
-      for weight_file in weights_path.glob('*.safetensors'):
-        state_dict.update(safe_load(weight_file))
-      state_dict = convert_from_huggingface(
-        state_dict,
-        model_params["n_layers"],
-        model_params["n_heads"],
-        model_params["n_kv_heads"],
-      )
+      state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+      state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
+      lsd_args = dict(state_dict=state_dict, realize=False, strict=False)
 
-      ref_model = Transformer(**model_params, max_context=SEQLEN, fuse_wqkv=False, use_lora=False)
-      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
-        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
-
-      load_state_dict(ref_model, state_dict, realize=False, strict=False)
-
-      fused_model = Transformer(**model_params, max_context=SEQLEN, fuse_wqkv=True, use_lora=False)
-
-      print("converting from normal llama to fused llama")
-      copy_weights_fused(fused_model, ref_model)
-      
-      print("converting from normal fused llama to flat fused llama")
-      copy_weights(model, fused_model)
-
-      del state_dict
-      del ref_model
-      del fused_model
-
+      if not FUSE_WQKV:
+        load_state_dict(model, **lsd_args)
+      else:
+        # create the unfused, non-flat model, and load the weights
+        t_args = model_params|dict(max_context=SEQLEN)
+        load_state_dict(unfused_model:=Transformer(**t_args, fuse_wqkv=False), **lsd_args)
+  
+        # copy weights into fused nonflat or flat model (flat model is only fused)
+        if not FLAT:
+          copy_weights_fused(model, unfused_model)
+        else:
+          copy_weights_fused(fused_model:=Transformer(**t_args, fuse_wqkv=True), unfused_model)
+          copy_weights_flat(model, fused_model)
+          del fused_model
+        del unfused_model
+      del state_dict, lsd_args
 
   params = get_parameters(model)
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
-  if llama2_70b_lora:
-    # grad == None are not trainable
-    for p in params:
-      if not p.requires_grad:
-        p.requires_grad_(False)
+  # no grad unless explicitly marked as such
+  if llama2_70b_lora: [p.requires_grad_(False) for p in params if not p.requires_grad]
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
