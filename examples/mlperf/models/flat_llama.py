@@ -41,7 +41,7 @@ def rmsnorm(x_in:Tensor, eps:float):
 
 class FlatTransformer:
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None,
-               rope_theta:int=10000, max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
+               rope_theta:int=10000, max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1, use_lora:bool=False):
     self.vocab_size = vocab_size
     self.n_layers = n_layers
     self.n_heads = n_heads
@@ -50,20 +50,18 @@ class FlatTransformer:
     self.n_rep = self.n_heads // self.n_kv_heads
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
+    self.use_lora = use_lora
 
     # Attention
-    self.wqkv = self.lin_per_layer(dim, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2)
-    self.wo = self.lin_per_layer(self.n_heads * self.head_dim, dim)
+    self.wqkv = self.lin_per_layer(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2))
+    self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim)
 
     # LoRa parameters
-    if getenv("LORA"):
-      self.lora_a = self.lin_per_layer(dim, lora_rank, requires_grad=True)
-      self.lora_b = self.lin_per_layer(lora_rank, self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2, zerod=True, requires_grad=True)
-  
-      self.lora_a_wo = self.lin_per_layer(self.n_heads * self.head_dim, lora_rank, requires_grad=True)
-      self.lora_b_wo = self.lin_per_layer(lora_rank, dim, zerod=True, requires_grad=True)
+    if self.use_lora:
+      self.lora_a, self.lora_b = self.create_lora_params(dim, lora_rank, wqkv_dim)
+      self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, lora_rank, wo_dim)
     else:
-      self.lora_a = self.lora_b = self.lora_b_wo = self.lora_a_wo = None
+      self.lora_a = self.lora_b = self.lora_b_wo = self.lora_a_wo = [None] * self.n_layers
 
     # FeedForward
     self.w1 = self.lin_per_layer(dim, hidden_dim)
@@ -88,6 +86,11 @@ class FlatTransformer:
       return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     else:
       return Tensor.uniform(self.n_layers, out_features, in_features, low=-bound, high=bound, dtype=dt, **kwargs)
+
+  def create_lora_params(self, dim:int, rank:float, out:float) -> tuple[Tensor, Tensor]:
+    a = self.lin_per_layer(dim, rank, requires_grad=True)
+    b = self.lin_per_layer(rank, out, zerod=True, requires_grad=True)
+    return a, b
 
   def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 lora_a:Tensor|None, lora_b: Tensor|None, lora_a_wo:Tensor|None, lora_b_wo:Tensor|None):
@@ -140,7 +143,7 @@ class FlatTransformer:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
       self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
-      if self.lora_a is not None:
+      if self.use_lora:
         self.lora_a.shard_(device, axis=None).realize()
         self.lora_b.shard_(device, axis=1).realize()
         self.lora_a_wo.shard_(device, axis=2).realize()
@@ -162,10 +165,8 @@ class FlatTransformer:
       h = self.run_layer(h, freqs_cis,
                          self.attention_norm[i], self.wqkv[i], self.wo[i],
                          self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
-                         self.lora_a[i] if self.lora_a is not None else None,
-                         self.lora_b[i] if self.lora_b is not None else None,
-                         self.lora_a_wo[i] if self.lora_a_wo is not None else None,
-                         self.lora_b_wo[i] if self.lora_b_wo is not None else None)
+                         self.lora_a[i],  self.lora_b[i],
+                         self.lora_a_wo[i], self.lora_b_wo[i])
     logits = self.output(self.norm(h))
     return logits
 
