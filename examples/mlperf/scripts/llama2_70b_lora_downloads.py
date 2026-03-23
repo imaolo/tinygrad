@@ -5,7 +5,7 @@ from huggingface_hub import snapshot_download
 
 def main() -> None:
   basedir = Path(__file__).parent/"llama2_70b_lora/dataset"
-  basedir.mkdir(exist_ok=False, parents=True)
+  basedir.mkdir(exist_ok=True, parents=True)
   repo_id = os.getenv("DATASET_REPO", "regisss/scrolls_gov_report_preprocessed_mlperf_2")
   outdir = Path(os.getenv("OUTDIR", str(basedir / "hf_dataset_repo")))
 
