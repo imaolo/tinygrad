@@ -142,22 +142,22 @@ class FlatTransformer:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
-      self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
-      self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
+      self.wqkv.shard_(device, axis=1)          # (n_layers, out, dim) shard out
+      self.wo.shard_(device, axis=2)             # (n_layers, dim, in) shard in
       if self.use_lora:
-        self.lora_a.shard_(device, axis=None).realize()
-        self.lora_b.shard_(device, axis=1).realize()
-        self.lora_a_wo.shard_(device, axis=2).realize()
-        self.lora_b_wo.shard_(device, axis=None).realize()
-      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
-      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      self.attention_norm.shard_(device, axis=None).realize()
-      self.ffn_norm.shard_(device, axis=None).realize()
-      self.norm.weight.shard_(device, axis=None).realize()
-      self.tok_embeddings.weight.shard_(device, axis=0).realize()
-      self.output.weight.shard_(device, axis=0).realize()
-      self.freqs_cis.shard_(device, axis=None).realize()
+        self.lora_a.shard_(device, axis=None)
+        self.lora_b.shard_(device, axis=1)
+        self.lora_a_wo.shard_(device, axis=2)
+        self.lora_b_wo.shard_(device, axis=None)
+      self.w1.shard_(device, axis=1)             # (n_layers, hidden, dim) shard out
+      self.w2.shard_(device, axis=2)             # (n_layers, dim, hidden) shard in
+      self.w3.shard_(device, axis=1)             # (n_layers, hidden, dim) shard out
+      self.attention_norm.shard_(device, axis=None)
+      self.ffn_norm.shard_(device, axis=None)
+      self.norm.weight.shard_(device, axis=None)
+      self.tok_embeddings.weight.shard_(device, axis=0)
+      self.output.weight.shard_(device, axis=0)
+      self.freqs_cis.shard_(device, axis=None)
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
