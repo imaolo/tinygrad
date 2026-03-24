@@ -103,6 +103,9 @@ class Transformer:
     for layer in self.layers: h = layer(h, freqs_cis)
     logits = self.output(self.norm(h))
     return logits
+  
+  @property
+  def n_layers(self) -> int: return len(self.layers)
 
   def shard(self, device:tuple[str, ...], mp:bool=False):
     from tinygrad.nn.state import get_parameters
