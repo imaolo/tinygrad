@@ -98,6 +98,8 @@ class Transformer:
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
     self.n_heads = n_heads
     self.n_kv_heads = n_kv_heads
+    self.use_lora = use_lora
+    self.fuse_wqkv = fuse_wqkv
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
@@ -110,22 +112,38 @@ class Transformer:
   def n_layers(self) -> int: return len(self.layers)
 
   def shard(self, device:tuple[str, ...], mp:bool=False):
-    from tinygrad.nn.state import get_parameters
+    from tinygrad.nn.state import get_parameters, get_state_dict
     if not mp:
-      for v in get_parameters(self): v.shard_(device, axis=None)
+      for v in get_parameters(self):
+        v.shard_(device, axis=None)
     else:
-      # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
-      self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
-      self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
-      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
-      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      self.attention_norm.shard_(device, axis=None).realize()
-      self.ffn_norm.shard_(device, axis=None).realize()
-      self.norm.weight.shard_(device, axis=None).realize()
-      self.tok_embeddings.weight.shard_(device, axis=0).realize()
-      self.output.weight.shard_(device, axis=0).realize()
-      self.freqs_cis.shard_(device, axis=None).realize()
+      # TODO - LORA
+      for k, v in get_state_dict(self).items():
+        if 'scale' in k:
+          v.shard_(device, axis=None)
+        elif not self.fuse_wqkv and '.attention.wq' in k:
+          v.shard_(device, axis=0)
+        elif not self.fuse_wqkv and '.attention.wk' in k:
+          v.shard_(device, axis=0)
+        elif not self.fuse_wqkv and '.attention.wv' in k:
+          v.shard_(device, axis=0)
+        elif self.fuse_wqkv and '.attention.wqkv' in k:
+          v.shard_(device, axis=0)
+        elif '.attention.wo' in k:
+          v.shard_(device, axis=1)
+        elif '.feed_forward.w1.' in k:
+          v.shard_(device, axis=0)
+        elif '.feed_forward.w2.' in k:
+          v.shard_(device, axis=1)
+        elif '.feed_forward.w3.' in k:
+          v.shard_(device, axis=0)
+        elif 'tok_embeddings.weight' in k:
+          v.shard_(device, axis=0)
+        elif 'output.weight' in k:
+          v.shard_(device, axis=0)
+        else:
+          v.shard_(device, axis=None)
+
 
 def _fuse_qkv(q:Tensor, k:Tensor, v:Tensor, n_heads:int, n_kv_heads:int) -> Tensor:
   head_dim = q.shape[0] // n_heads
@@ -137,22 +155,20 @@ def _fuse_qkv(q:Tensor, k:Tensor, v:Tensor, n_heads:int, n_kv_heads:int) -> Tens
   return q.cat(k, v, dim=1).reshape(-1, in_dim)
 
 def copy_weights_fused(fused_model: Transformer, unfused_model: Transformer) -> None:
-  from tinygrad.nn.state import get_state_dict
-
   for dst_layer, src_layer in zip(fused_model.layers, unfused_model.layers):
-    dst_layer.attention.wqkv.weight.assign(_fuse_qkv(
+    dst_layer.attention.wqkv.weight.replace(_fuse_qkv(
       src_layer.attention.wq.weight.cast(dst_layer.attention.wqkv.weight.dtype),
       src_layer.attention.wk.weight.cast(dst_layer.attention.wqkv.weight.dtype),
       src_layer.attention.wv.weight.cast(dst_layer.attention.wqkv.weight.dtype),
       src_layer.attention.n_heads, src_layer.attention.n_kv_heads
     ))
-    dst_layer.attention.wo.weight.assign(src_layer.attention.wo.weight.cast(dst_layer.attention.wo.weight.dtype))
-    dst_layer.feed_forward.w1.weight.assign(src_layer.feed_forward.w1.weight.cast(dst_layer.feed_forward.w1.weight.dtype))
-    dst_layer.feed_forward.w2.weight.assign(src_layer.feed_forward.w2.weight.cast(dst_layer.feed_forward.w2.weight.dtype))
-    dst_layer.feed_forward.w3.weight.assign(src_layer.feed_forward.w3.weight.cast(dst_layer.feed_forward.w3.weight.dtype))
-    dst_layer.attention_norm.weight.assign(src_layer.attention_norm.weight.cast(dst_layer.attention_norm.weight.dtype))
-    dst_layer.ffn_norm.weight.assign(src_layer.ffn_norm.weight.cast(dst_layer.ffn_norm.weight.dtype))
+    dst_layer.attention.wo.weight.replace(src_layer.attention.wo.weight.cast(dst_layer.attention.wo.weight.dtype))
+    dst_layer.feed_forward.w1.weight.replace(src_layer.feed_forward.w1.weight.cast(dst_layer.feed_forward.w1.weight.dtype))
+    dst_layer.feed_forward.w2.weight.replace(src_layer.feed_forward.w2.weight.cast(dst_layer.feed_forward.w2.weight.dtype))
+    dst_layer.feed_forward.w3.weight.replace(src_layer.feed_forward.w3.weight.cast(dst_layer.feed_forward.w3.weight.dtype))
+    dst_layer.attention_norm.weight.replace(src_layer.attention_norm.weight.cast(dst_layer.attention_norm.weight.dtype))
+    dst_layer.ffn_norm.weight.replace(src_layer.ffn_norm.weight.cast(dst_layer.ffn_norm.weight.dtype))
 
-  fused_model.norm.weight.assign(unfused_model.norm.weight.cast(fused_model.norm.weight.dtype))
-  fused_model.tok_embeddings.weight.assign(unfused_model.tok_embeddings.weight.cast(fused_model.tok_embeddings.weight.dtype))
-  fused_model.output.weight.assign(unfused_model.output.weight.cast(fused_model.output.weight.dtype))
+  fused_model.norm.weight.replace(unfused_model.norm.weight.cast(fused_model.norm.weight.dtype))
+  fused_model.tok_embeddings.weight.replace(unfused_model.tok_embeddings.weight.cast(fused_model.tok_embeddings.weight.dtype))
+  fused_model.output.weight.replace(unfused_model.output.weight.cast(fused_model.output.weight.dtype))
