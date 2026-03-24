@@ -96,6 +96,8 @@ class Transformer:
     self.tok_embeddings = embedding(vocab_size, dim)
     self.output = nn.Linear(dim, vocab_size, bias=False) if embedding == nn.Embedding else linear(dim, vocab_size, bias=False)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
+    self.n_heads = n_heads
+    self.n_kv_heads = n_kv_heads
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
