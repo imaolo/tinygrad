@@ -532,6 +532,48 @@ def batch_load_train_stable_diffusion(urls:str, BS:int):
 
 # llama3
 
+@functools.lru_cache(maxsize=4)
+def _load_llama2_70b_lora_split(base_dir:str, split:str):
+  from datasets import load_dataset
+
+  dataset_path = Path(base_dir)
+  cache_dir = dataset_path / ".cache" / "huggingface" / "datasets"
+  ds = load_dataset(
+    "parquet",
+    data_files={split: str(dataset_path / "data" / f"{split}-00000-of-00001.parquet")},
+    split=split,
+    cache_dir=str(cache_dir),
+  )
+  return np.asarray(ds["input_ids"], dtype=np.int32), np.asarray(ds["labels"], dtype=np.int64)
+
+class Llama2LoRAParquetDataset:
+  def __init__(self, base_dir:Path, val:bool=False):
+    split = "validation" if val else "train"
+    self.input_ids, self.labels = _load_llama2_70b_lora_split(str(base_dir), split)
+    self.val = val
+    self.count = self.input_ids.shape[0]
+    self.seqlen = self.input_ids.shape[1]
+
+def batch_load_llama2_70b_lora(bs:int, samples:int, base_dir:Path, seed:int=0, val:bool=False):
+  dataset = Llama2LoRAParquetDataset(base_dir, val=val)
+  if dataset.val:
+    raise NotImplementedError("llama2_70b_lora validation rows contain masked labels and need a dedicated eval path")
+
+  order = np.arange(dataset.count, dtype=np.int64)
+  rng = np.random.RandomState(seed)
+  rng.shuffle(order)
+  ptr = 0
+
+  for _ in range(samples // bs):
+    batch = np.empty((bs, dataset.seqlen), dtype=np.int32)
+    for bi in range(bs):
+      if ptr == dataset.count:
+        rng.shuffle(order)
+        ptr = 0
+      batch[bi] = dataset.input_ids[order[ptr]]
+      ptr += 1
+    yield Tensor(batch, device="NPY")
+
 class BinIdxDataset:
   def __init__(self, base_path:Path):
     self.idx_t = Tensor(base_path.with_name(f"{base_path.name}.idx"))

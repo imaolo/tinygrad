@@ -1298,7 +1298,8 @@ def train_llama3(llama2_70b_lora:bool=False):
   BENCHMARK = getenv("BENCHMARK")
 
   config = {}
-  BASEDIR            = config["BASEDIR"]                = Path(getenv("BASEDIR", "/raid/datasets/c4/"))
+  default_basedir = Path(__file__).parent / "scripts" / "llama2_70b_lora" / "dataset" if llama2_70b_lora else Path("/raid/datasets/c4/")
+  BASEDIR            = config["BASEDIR"]                = Path(getenv("BASEDIR", default_basedir))
   BS                 = config["BS"]                     = getenv("BS", 16)
   grad_acc           = config["GRADIENT_ACC_STEPS"]     = getenv("GRADIENT_ACC_STEPS", 1)
   GBS                = config["GLOBAL_BATCH_SIZE"]      = BS * grad_acc
@@ -1308,13 +1309,13 @@ def train_llama3(llama2_70b_lora:bool=False):
   TRAIN_ON_VAL       = config["TRAIN_ON_VAL"]           = getenv("TRAIN_ON_VAL", 0)
   SMALL              = config["SMALL"]                  = getenv("SMALL", 0)
   SAMPLES            = config["SAMPLES"]                = getenv("SAMPLES", 5_760 if TRAIN_ON_VAL else 1_200_000 * 1152)
-  EVAL_SAMPLES       = config["EVAL_SAMPLES"]           = getenv("EVAL_SAMPLES", 5760 if not SMALL else 1024)
+  EVAL_SAMPLES       = config["EVAL_SAMPLES"]           = getenv("EVAL_SAMPLES", 173 if llama2_70b_lora else (5760 if not SMALL else 1024))
   MAX_STEPS          = config["MAX_STEPS"]              = getenv("MAX_STEPS", math.ceil(1_200_000 * 1152 / GBS))
   WARMUP_STEPS       = config["WARMUP_STEPS"]           = getenv("WARMUP_STEPS", math.ceil(8000 * 1152 / GBS))
   LR                 = config["LR"]                     = getenv("LR", 8e-5 * GBS / 1152)
   END_LR             = config["END_LR"]                 = getenv("END_LR", 8e-7)
   EVAL_FREQ          = config["EVAL_FREQ"]              = getenv("EVAL_FREQ", 46080)
-  EVAL_BS            = config["EVAL_BS"]                = getenv("EVAL_BS", 16)
+  EVAL_BS            = config["EVAL_BS"]                = getenv("EVAL_BS", 0 if llama2_70b_lora else 16)
   EVAL_TARGET        = config["EVAL_TARGET"]            = getenv("EVAL_TARGET", 5.6)
 
   # LR=1e-4 TRAIN_ON_VAL=1 DEFAULT_FLOAT=bfloat16 JITBEAM=2 OPTIM_DTYPE=bfloat16 LLAMA3_SIZE=1B WARMUP_STEPS=36 DECAY_STEPS=360 SEQLEN=512 PYTHONPATH=. AMD=1 AMD_LLVM=0 MODEL=llama3 python3 examples/mlperf/model_train.py
@@ -1399,7 +1400,10 @@ def train_llama3(llama2_70b_lora:bool=False):
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   # no grad unless explicitly marked as such
-  if llama2_70b_lora: [p.requires_grad_(False) for p in params if not p.requires_grad]
+  if llama2_70b_lora:
+    for p in params:
+      if not p.requires_grad:
+        p.requires_grad_(False)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
@@ -1483,11 +1487,17 @@ def train_llama3(llama2_70b_lora:bool=False):
   def get_train_iter():
     if getenv("FAKEDATA", 0):
       return fake_data(BS, SAMPLES)
+    elif llama2_70b_lora:
+      from examples.mlperf.dataloader import batch_load_llama2_70b_lora
+      return batch_load_llama2_70b_lora(BS, SAMPLES, BASEDIR, seed=DATA_SEED, val=bool(TRAIN_ON_VAL))
     else:
       from examples.mlperf.dataloader import batch_load_llama3
       return batch_load_llama3(BS, SAMPLES, SEQLEN, BASEDIR, seed=DATA_SEED, val=bool(TRAIN_ON_VAL), small=bool(SMALL))
 
   if getenv("FAKEDATA", 0):
+    eval_dataset = None
+  elif llama2_70b_lora:
+    # TODO
     eval_dataset = None
   else:
     from examples.mlperf.dataloader import get_llama3_dataset
@@ -1495,6 +1505,8 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   def get_eval_iter():
     if eval_dataset is None:
+      if llama2_70b_lora and not getenv("FAKEDATA", 0):
+        raise NotImplementedError("llama2_70b_lora evaluation needs a masked-label eval path; set EVAL_BS=0 to disable eval")
       return fake_data(EVAL_BS, EVAL_SAMPLES)
     from examples.mlperf.dataloader import iterate_llama3_dataset
     return iterate_llama3_dataset(eval_dataset, EVAL_BS)
