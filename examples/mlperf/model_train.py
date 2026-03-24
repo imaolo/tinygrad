@@ -1315,7 +1315,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   LR                 = config["LR"]                     = getenv("LR", 8e-5 * GBS / 1152)
   END_LR             = config["END_LR"]                 = getenv("END_LR", 8e-7)
   EVAL_FREQ          = config["EVAL_FREQ"]              = getenv("EVAL_FREQ", 46080)
-  EVAL_BS            = config["EVAL_BS"]                = getenv("EVAL_BS", 0 if llama2_70b_lora else 16)
+  EVAL_BS            = config["EVAL_BS"]                = getenv("EVAL_BS", 16)
   EVAL_TARGET        = config["EVAL_TARGET"]            = getenv("EVAL_TARGET", 5.6)
 
   # LR=1e-4 TRAIN_ON_VAL=1 DEFAULT_FLOAT=bfloat16 JITBEAM=2 OPTIM_DTYPE=bfloat16 LLAMA3_SIZE=1B WARMUP_STEPS=36 DECAY_STEPS=360 SEQLEN=512 PYTHONPATH=. AMD=1 AMD_LLVM=0 MODEL=llama3 python3 examples/mlperf/model_train.py
@@ -1469,12 +1469,21 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   @TinyJit
   @Tensor.train(False)
-  def eval_step(tokens:Tensor):
-    if is_dp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.to(None).shard(device)
-    if not is_sharding: tokens = tokens.to(None)
+  def eval_step(tokens:Tensor|tuple[Tensor, Tensor], ignore_index:int|None=None):
+    tokens, labels = tokens if isinstance(tokens, tuple) else (tokens, None)
+    if is_dp:
+      tokens = tokens.to(None).shard(device, 0)
+      if labels is not None: labels = labels.to(None).shard(device, 0)
+    if is_mp:
+      tokens = tokens.to(None).shard(device)
+      if labels is not None: labels = labels.to(None).shard(device)
+    if not is_sharding:
+      tokens = tokens.to(None)
+      if labels is not None: labels = labels.to(None)
     logits:Tensor = model(tokens[:, :-1])
-    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
+    labels = tokens if labels is None else labels
+    spc_kwargs = dict() if ignore_index is None else dict(ignore_index=ignore_index)
+    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(labels[:, 1:], **spc_kwargs)
     return loss.flatten().float().to("CPU")
 
   # ** data iters **
@@ -1497,19 +1506,21 @@ def train_llama3(llama2_70b_lora:bool=False):
   if getenv("FAKEDATA", 0):
     eval_dataset = None
   elif llama2_70b_lora:
-    # TODO
-    eval_dataset = None
+    from examples.mlperf.dataloader import get_llama2_70b_lora_dataset
+    eval_dataset = get_llama2_70b_lora_dataset(BASEDIR, val=True)
   else:
     from examples.mlperf.dataloader import get_llama3_dataset
     eval_dataset = get_llama3_dataset(EVAL_SAMPLES, SEQLEN, BASEDIR, val=True, small=bool(SMALL))
 
   def get_eval_iter():
     if eval_dataset is None:
-      if llama2_70b_lora and not getenv("FAKEDATA", 0):
-        raise NotImplementedError("llama2_70b_lora evaluation needs a masked-label eval path; set EVAL_BS=0 to disable eval")
       return fake_data(EVAL_BS, EVAL_SAMPLES)
-    from examples.mlperf.dataloader import iterate_llama3_dataset
-    return iterate_llama3_dataset(eval_dataset, EVAL_BS)
+    elif llama2_70b_lora:
+      from examples.mlperf.dataloader import iterate_llama2_70b_lora_dataset
+      return iterate_llama2_70b_lora_dataset(eval_dataset, EVAL_BS)
+    else:
+      from examples.mlperf.dataloader import iterate_llama3_dataset
+      return iterate_llama3_dataset(eval_dataset, EVAL_BS)
 
   num_params = sum(p.numel() for p in params) - model_params["vocab_size"]*model_params["dim"]
   train_iter = get_train_iter()
@@ -1604,7 +1615,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       tqdm.write(f"evaluating {EVAL_SAMPLES//EVAL_BS} batches of {EVAL_BS} sequences")
 
       for j,tokens in tqdm(enumerate(eval_iter), total=EVAL_SAMPLES//EVAL_BS):
-        eval_losses += eval_step(tokens).tolist()
+        eval_losses += eval_step(tokens, -100 if llama2_70b_lora else None).tolist()
 
         if BENCHMARK and (j+1) == min(BENCHMARK, EVAL_SAMPLES//EVAL_BS):
           return

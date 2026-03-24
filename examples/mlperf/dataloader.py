@@ -554,25 +554,39 @@ class Llama2LoRAParquetDataset:
     self.count = self.input_ids.shape[0]
     self.seqlen = self.input_ids.shape[1]
 
-def batch_load_llama2_70b_lora(bs:int, samples:int, base_dir:Path, seed:int=0, val:bool=False):
-  dataset = Llama2LoRAParquetDataset(base_dir, val=val)
+def get_llama2_70b_lora_dataset(base_dir: Path, val: bool=False) -> Llama2LoRAParquetDataset:
+  return Llama2LoRAParquetDataset(base_dir, val=val)
+
+def iterate_llama2_70b_lora_dataset(dataset: Llama2LoRAParquetDataset, bs: int, samples: int|None=None, seed: int=0):
   if dataset.val:
-    raise NotImplementedError("llama2_70b_lora validation rows contain masked labels and need a dedicated eval path")
+    total = dataset.count if samples is None else min(samples, dataset.count)
+    for b in range(math.ceil(total / bs)):
+      start = b * bs
+      end = min(start + bs, total)
+      cur = end - start
+      toks = np.zeros((bs, dataset.seqlen), dtype=np.int32)
+      labels = np.full((bs, dataset.seqlen), -100, dtype=np.int64)
+      toks[:cur] = dataset.input_ids[start:end]
+      labels[:cur] = dataset.labels[start:end]
+      yield Tensor(toks, device="NPY"), Tensor(labels, device="NPY")
+  else:
+    order = np.arange(dataset.count, dtype=np.int64)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(order)
+    ptr = 0
+    total = dataset.count if samples is None else samples
+    for _ in range(total // bs):
+      batch = np.empty((bs, dataset.seqlen), dtype=np.int32)
+      for bi in range(bs):
+        if ptr == dataset.count:
+          rng.shuffle(order)
+          ptr = 0
+        batch[bi] = dataset.input_ids[order[ptr]]
+        ptr += 1
+      yield Tensor(batch, device="NPY")
 
-  order = np.arange(dataset.count, dtype=np.int64)
-  rng = np.random.RandomState(seed)
-  rng.shuffle(order)
-  ptr = 0
-
-  for _ in range(samples // bs):
-    batch = np.empty((bs, dataset.seqlen), dtype=np.int32)
-    for bi in range(bs):
-      if ptr == dataset.count:
-        rng.shuffle(order)
-        ptr = 0
-      batch[bi] = dataset.input_ids[order[ptr]]
-      ptr += 1
-    yield Tensor(batch, device="NPY")
+def batch_load_llama2_70b_lora(bs: int, samples: int, base_dir: Path, seed: int=0, val: bool=False):
+  return iterate_llama2_70b_lora_dataset(get_llama2_70b_lora_dataset(base_dir, val=val),bs, samples=samples, seed=seed,)
 
 class BinIdxDataset:
   def __init__(self, base_path:Path):
