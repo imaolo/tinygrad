@@ -42,7 +42,7 @@ def rmsnorm(x_in:Tensor, eps:float):
 class FlatTransformer:
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1, use_lora:bool=False, fuse_wqkv:bool=True):
-    assert fuse_wqkv, "non-fused unsupported"
+    self.fuse_wqkv = fuse_wqkv
     self.vocab_size = vocab_size
     self.n_layers = n_layers
     self.n_heads = n_heads
@@ -52,12 +52,18 @@ class FlatTransformer:
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
     self.use_lora = use_lora
+    scaled_std = 0.02 / math.sqrt(2 * n_layers)
 
     # Attention
-    self.wqkv = self.lin_per_layer(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2))
-    self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim)
+    if self.fuse_wqkv:
+      self.wqkv = self.lin_per_layer(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2))
+    else:
+      self.wq = self.lin_per_layer(dim, self.n_heads * self.head_dim)
+      self.wk = self.lin_per_layer(dim, self.n_kv_heads * self.head_dim)
+      self.wv = self.lin_per_layer(dim, self.n_kv_heads * self.head_dim)
+    self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim, std=scaled_std)
 
-    # LoRa parameters
+    if not self.fuse_wqkv: assert not self.use_lora, "Lora requires fused wqkv"
     if self.use_lora:
       self.lora_a, self.lora_b = self.create_lora_params(dim, lora_rank, wqkv_dim)
       self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, lora_rank, wo_dim)
@@ -66,7 +72,7 @@ class FlatTransformer:
 
     # FeedForward
     self.w1 = self.lin_per_layer(dim, hidden_dim)
-    self.w2 = self.lin_per_layer(hidden_dim, dim)
+    self.w2 = self.lin_per_layer(hidden_dim, dim, std=scaled_std)
     self.w3 = self.lin_per_layer(dim, hidden_dim)
 
     self.norm_eps = norm_eps
@@ -76,39 +82,44 @@ class FlatTransformer:
     # output
     self.norm = nn.RMSNorm(dim, norm_eps)
     self.tok_embeddings = nn.Embedding(vocab_size, dim)
-    self.output = nn.Linear(dim, vocab_size, bias=False)
+    self.tok_embeddings.weight = Tensor.normal(vocab_size, dim, mean=0.0, std=0.02)
+    self.output = Tensor.normal(1, vocab_size, dim, mean=0.0, std=0.02)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
-  def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, **kwargs):
-    bound = 1 / math.sqrt(in_features)
+  def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
     dt = FP8_DTYPE if FP8 else None
     if getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt)
     if zerod:
       return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     else:
-      return Tensor.uniform(self.n_layers, out_features, in_features, low=-bound, high=bound, dtype=dt, **kwargs)
+      return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt)
 
   def create_lora_params(self, dim:int, rank:float, out:float) -> tuple[Tensor, Tensor]:
     a = self.lin_per_layer(dim, rank, requires_grad=True)
     b = self.lin_per_layer(rank, out, zerod=True, requires_grad=True)
     return a, b
-
-  def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
-                lora_a:Tensor|None, lora_b: Tensor|None, lora_a_wo:Tensor|None, lora_b_wo:Tensor|None):
+    
+  def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wo:Tensor, wqkv:Tensor|None=None,
+              wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,
+              lora_a:Tensor|None=None, lora_b: Tensor|None=None, lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None):
     x = rmsnorm(x, self.norm_eps) * attention_norm
-    xqkv = matmul(x, wqkv)
+    bsz, seqlen, _ = x.shape
 
-    if lora_a is not None and lora_b is not None:
-      lora = matmul(x.dropout(self.lora_dropout), lora_a)
-      lora = matmul(lora, lora_b)
-      xqkv = xqkv + (lora * self.lora_scale)
-
-    bsz, seqlen, _ = xqkv.shape
-    # interleaved layout: each kv group has [n_rep q heads, 1 k head, 1 v head] for clean MP sharding
-    xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
-    xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
-    xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
-    xv = xqkv[:, :, :, self.n_rep+1].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+    if wqkv is not None:
+      xqkv = matmul(x, wqkv)
+      if lora_a is not None and lora_b is not None:
+        lora = matmul(x.dropout(self.lora_dropout), lora_a)
+        lora = matmul(lora, lora_b)
+        xqkv = xqkv + (lora * self.lora_scale)
+      xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
+      xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
+      xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+      xv = xqkv[:, :, :, self.n_rep+1].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+    else:
+      assert wq is not None and wk is not None and wv is not None
+      xq = matmul(x, wq).reshape(bsz, seqlen, self.n_heads, self.head_dim)
+      xk = matmul(x, wk).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+      xv = matmul(x, wv).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
 
     xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
     xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
@@ -129,11 +140,13 @@ class FlatTransformer:
 
   @function(precompile=True, precompile_backward=True)
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
-                attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
+                attention_norm:Tensor, wo:Tensor,
                 ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
-                lora_a: Tensor|None, lora_b:Tensor|None,
-                lora_a_wo: Tensor|None, lora_b_wo:Tensor|None):
-    h = x + self.attention(x, freqs_cis, attention_norm, wqkv, wo, lora_a, lora_b, lora_a_wo, lora_b_wo)
+                wqkv:Tensor|None=None, wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,
+                lora_a: Tensor|None=None, lora_b:Tensor|None=None,
+                lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
+    h = x + self.attention(x, freqs_cis, attention_norm, wo, wqkv=wqkv, wq=wq, wk=wk, wv=wv,
+                           lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo)
     return h + self.feed_forward(h, ffn_norm, w1, w2, w3)
 
   def shard(self, device:tuple[str, ...], mp:bool=False, intermediate_fn:str|None=None):
@@ -152,33 +165,40 @@ class FlatTransformer:
         load_state_dict(self, safe_load(intermediate_fn))
 
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
-      self.wqkv.shard_(device, axis=1)          # (n_layers, out, dim) shard out
-      self.wo.shard_(device, axis=2)             # (n_layers, dim, in) shard in
+      if self.fuse_wqkv:
+        self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
+      else:
+        self.wq.shard_(device, axis=1).realize()            # (n_layers, n_heads*head_dim, dim) shard out
+        self.wk.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
+        self.wv.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
       if self.use_lora:
         self.lora_a.shard_(device, axis=None)
         self.lora_b.shard_(device, axis=1)
         self.lora_a_wo.shard_(device, axis=2)
         self.lora_b_wo.shard_(device, axis=None)
-      self.w1.shard_(device, axis=1)             # (n_layers, hidden, dim) shard out
-      self.w2.shard_(device, axis=2)             # (n_layers, dim, hidden) shard in
-      self.w3.shard_(device, axis=1)             # (n_layers, hidden, dim) shard out
-      self.attention_norm.shard_(device, axis=None)
-      self.ffn_norm.shard_(device, axis=None)
-      self.norm.weight.shard_(device, axis=None)
-      self.tok_embeddings.weight.shard_(device, axis=0)
-      self.output.weight.shard_(device, axis=0)
-      self.freqs_cis.shard_(device, axis=None)
+      self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
+      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
+      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self.attention_norm.shard_(device, axis=None).realize()
+      self.ffn_norm.shard_(device, axis=None).realize()
+      self.norm.weight.shard_(device, axis=None).realize()
+      self.tok_embeddings.weight.shard_(device, axis=0).realize()
+      self.output.shard_(device, axis=1).realize()
+      self.freqs_cis.shard_(device, axis=None).realize()
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
     for i in range(self.n_layers):
+      attn_kwargs = {"wqkv": self.wqkv[i]} if self.fuse_wqkv else {"wq": self.wq[i], "wk": self.wk[i], "wv": self.wv[i]}
       h = self.run_layer(h, freqs_cis,
-                         self.attention_norm[i], self.wqkv[i], self.wo[i],
+                         self.attention_norm[i], self.wo[i],
                          self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
-                         self.lora_a[i],  self.lora_b[i],
-                         self.lora_a_wo[i], self.lora_b_wo[i])
-    logits = self.output(self.norm(h))
+                         lora_a=self.lora_a[i], lora_b=self.lora_b[i],
+                         lora_a_wo=self.lora_a_wo[i], lora_b_wo=self.lora_b_wo[i],
+                          **attn_kwargs)
+    logits = self.norm(h) @ self.output[0].T
     return logits
 
 # TODO: this shouldn't be needed, but it prevents a copy of the grads. CAT can help
