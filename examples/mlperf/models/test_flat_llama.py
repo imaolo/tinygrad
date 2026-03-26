@@ -19,7 +19,7 @@ def copy_weights(flat: FlatTransformer, ref: Transformer):
   flat.ffn_norm.replace(Tensor.stack(*[ref.layers[i].ffn_norm.weight.cast(flat.ffn_norm.dtype) for i in range(n_layers)]))
   flat.norm.weight.replace(ref.norm.weight.cast(flat.norm.weight.dtype))
   flat.tok_embeddings.weight.replace(ref.tok_embeddings.weight.cast(flat.tok_embeddings.weight.dtype))
-  flat.output.weight.replace(ref.output.weight.cast(flat.output.weight.dtype))
+  flat.output.replace(ref.output.weight.unsqueeze(0).cast(flat.output.dtype))
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
