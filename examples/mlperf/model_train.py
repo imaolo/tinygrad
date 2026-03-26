@@ -1417,6 +1417,12 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   model.shard(device, is_mp)
 
+  if is_sharding:
+    # realize one by one to prevent dev:0 mem spike
+    for p in params: p.realize()
+
+  print("START: peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
+
   if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
 
