@@ -136,11 +136,21 @@ class FlatTransformer:
     h = x + self.attention(x, freqs_cis, attention_norm, wqkv, wo, lora_a, lora_b, lora_a_wo, lora_b_wo)
     return h + self.feed_forward(h, ffn_norm, w1, w2, w3)
 
-  def shard(self, device:tuple[str, ...], mp:bool=False):
-    from tinygrad.nn.state import get_parameters
+  def shard(self, device:tuple[str, ...], mp:bool=False, intermediate_fn:str|None=None):
+    from tinygrad.nn.state import get_parameters, get_state_dict, safe_save, load_state_dict, safe_load
     if not mp:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
+      if intermediate_fn is not None:
+        # materialize each to CPU
+        for param in get_parameters(self): param.to('CPU').realize()
+
+        # store to disk
+        safe_save(get_state_dict(self), intermediate_fn)
+
+        # load back from disk
+        load_state_dict(self, safe_load(intermediate_fn))
+
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1)          # (n_layers, out, dim) shard out
       self.wo.shard_(device, axis=2)             # (n_layers, dim, in) shard in
