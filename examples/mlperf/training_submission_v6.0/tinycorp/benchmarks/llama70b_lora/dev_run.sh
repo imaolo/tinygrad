@@ -12,6 +12,7 @@ export MP="${MP:-4}"
 export FLAT=${FLAT:-4}
 export FUSE_WQKV=${FUSE_WQKV:-1}
 export VIZ=${VIZ:-0}
+export JITBEAM=${JITBEAM:-3}
 
 # export CC=/opt/homebrew/opt/llvm@18/bin/clang
 .venv/bin/python -u examples/mlperf/model_train.py
