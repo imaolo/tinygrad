@@ -156,7 +156,7 @@ class FlatTransformer:
     else:
       if intermediate_fn is not None:
         # materialize each to CPU
-        for param in get_parameters(self): param.to('CPU').realize()
+        for param in get_parameters(self): param.to_('CPU').realize()
 
         # store to disk
         safe_save(get_state_dict(self), intermediate_fn)
