@@ -1292,6 +1292,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
+  import tempfile
 
   BENCHMARK = getenv("BENCHMARK")
 
@@ -1413,7 +1414,11 @@ def train_llama3(llama2_70b_lora:bool=False):
   device_count = max(DP, MP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
-  model.shard(device, is_mp)
+  if getenv("USE_INTERMEDIATE_WEIGHT_FILE", 0):
+    with tempfile.NamedTemporaryFile() as f:
+      model.shard(device, is_mp, f.name)
+  else:
+    model.shard(device, is_mp)
 
   if is_sharding:
     # realize one by one to prevent dev:0 mem spike
