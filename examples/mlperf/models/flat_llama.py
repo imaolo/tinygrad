@@ -148,7 +148,7 @@ class FlatTransformer:
     return h + self.feed_forward(h, ffn_norm, w1, w2, w3)
 
   def shard(self, device:tuple[str, ...], mp:bool=False, intermediate_fn:str|None=None):
-    from tinygrad.nn.state import get_parameters, get_state_dict, safe_save, load_state_dict, safe_load
+    from tinygrad.nn.state import get_parameters
     if not mp:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
