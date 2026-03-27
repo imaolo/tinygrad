@@ -42,7 +42,6 @@ def rmsnorm(x_in:Tensor, eps:float):
 class FlatTransformer:
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1, use_lora:bool=False, fuse_wqkv:bool=True):
-    self.fuse_wqkv = fuse_wqkv
     self.vocab_size = vocab_size
     self.n_layers = n_layers
     self.n_heads = n_heads
@@ -51,6 +50,7 @@ class FlatTransformer:
     self.n_rep = self.n_heads // self.n_kv_heads
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
+    self.fuse_wqkv = fuse_wqkv
     self.use_lora = use_lora
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
 
@@ -63,12 +63,11 @@ class FlatTransformer:
       self.wv = self.lin_per_layer(dim, self.n_kv_heads * self.head_dim)
     self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim, std=scaled_std)
 
-    if not self.fuse_wqkv: assert not self.use_lora, "Lora requires fused wqkv"
+    # LoRA
+    if not self.fuse_wqkv: assert not self.use_lora, "LoRA requires fused qkv"
     if self.use_lora:
       self.lora_a, self.lora_b = self.create_lora_params(dim, lora_rank, wqkv_dim)
       self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, lora_rank, wo_dim)
-    else:
-      self.lora_a = self.lora_b = self.lora_b_wo = self.lora_a_wo = [None] * self.n_layers
 
     # FeedForward
     self.w1 = self.lin_per_layer(dim, hidden_dim)
@@ -98,19 +97,23 @@ class FlatTransformer:
     a = self.lin_per_layer(dim, rank, requires_grad=True)
     b = self.lin_per_layer(rank, out, zerod=True, requires_grad=True)
     return a, b
+
+  def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
+    out = matmul(x.dropout(self.lora_dropout), lora_a)
+    out = matmul(out, lora_b)
+    return out * self.lora_scale
     
   def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wo:Tensor, wqkv:Tensor|None=None,
               wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,
-              lora_a:Tensor|None=None, lora_b: Tensor|None=None, lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None):
+              lora_a:Tensor|None=None, lora_b: Tensor|None=None,
+              lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None):
     x = rmsnorm(x, self.norm_eps) * attention_norm
     bsz, seqlen, _ = x.shape
 
     if wqkv is not None:
       xqkv = matmul(x, wqkv)
-      if lora_a is not None and lora_b is not None:
-        lora = matmul(x.dropout(self.lora_dropout), lora_a)
-        lora = matmul(lora, lora_b)
-        xqkv = xqkv + (lora * self.lora_scale)
+      if self.use_lora:
+        xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
       xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
       xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
       xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
@@ -126,10 +129,8 @@ class FlatTransformer:
     attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True).transpose(1, 2)
     attn = attn.reshape(bsz, seqlen, -1)
     out = matmul(attn, wo)
-    if lora_a_wo is not None and lora_b_wo is not None:
-      lora = matmul(attn.dropout(self.lora_dropout), lora_a_wo)
-      lora = matmul(lora, lora_b_wo)
-      out = out + (lora * self.lora_scale)
+    if self.use_lora:
+      out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
     return out
 
   def feed_forward(self, x:Tensor, ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor):
@@ -154,24 +155,7 @@ class FlatTransformer:
     if not mp:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
-      if intermediate_fn is not None:
-        from tqdm import tqdm
-        # materialize each to CPU
-        print("realizing intermediate weights")
-        it = iter(tqdm(get_parameters(self), total=len(get_parameters(self)), desc=f"params to cpu"))
-        for param in it: param.to_(Device.DEFAULT).realize().to_('CPU').realize()
 
-        print("round tripping to intermediate file")
-
-        # store to disk
-        safe_save(get_state_dict(self), intermediate_fn)
-
-        # load back from disk
-        load_state_dict(self, safe_load(intermediate_fn), use_to=False)
-
-        for param in get_parameters(self):
-          if param.requires_grad != False:
-            assert param.device.startswith('DISK')
 
 
 
@@ -215,12 +199,11 @@ class FlatTransformer:
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
     for i in range(self.n_layers):
       attn_kwargs = {"wqkv": self.wqkv[i]} if self.fuse_wqkv else {"wq": self.wq[i], "wk": self.wk[i], "wv": self.wv[i]}
+      lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if self.use_lora else {}
       h = self.run_layer(h, freqs_cis,
                          self.attention_norm[i], self.wo[i],
                          self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
-                         lora_a=self.lora_a[i], lora_b=self.lora_b[i],
-                         lora_a_wo=self.lora_a_wo[i], lora_b_wo=self.lora_b_wo[i],
-                          **attn_kwargs)
+                         **attn_kwargs, **lora_kwargs)
     logits = self.norm(h) @ self.output[0].T
     return logits
 

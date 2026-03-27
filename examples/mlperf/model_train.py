@@ -1372,7 +1372,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     t_args = model_params|dict(max_context=SEQLEN)
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
     state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
-    lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False)
+    lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
 
     # ensure all weights will be consumed
     ref_model = Transformer(**t_args, fuse_wqkv=False, use_lora=True)
@@ -1394,9 +1394,8 @@ def train_llama3(llama2_70b_lora:bool=False):
         copy_weights_flat(model, fused_model)
         del fused_model
       del unfused_model
-    del state_dict, lsd_args
   params = get_parameters(model)
-  # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+  assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   # no grad unless explicitly marked as such
   if llama2_70b_lora:
@@ -1414,17 +1413,21 @@ def train_llama3(llama2_70b_lora:bool=False):
   device_count = max(DP, MP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
-  if getenv("USE_INTERMEDIATE_WEIGHT_FILE", 0):
+  # resolve model transitions on CPU to prevent dev:0 spikes
+  if getenv("RESOLVE_MODEL_CPU", 0):
     with tempfile.NamedTemporaryFile() as f:
-      model.shard(device, is_mp, f.name)
-  else:
-    model.shard(device, is_mp)
+      # only makes sense for disk tensors
+      for param in params:
+        if param.requires_grad != False:
+          assert param.device.startswith('DISK')
 
-  if is_sharding:
-    # realize one by one to prevent dev:0 mem spike
-    for p in params: p.realize()
+      # realize to CPU
+      for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
+        param.to_("CPU").realize()
 
-  print("START: peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
+  model.shard(device, is_mp)
+
+  print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
   if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
