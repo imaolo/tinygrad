@@ -1414,7 +1414,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if getenv("RESOLVE_MODEL_CPU", 0):
     # only makes sense for disk tensors
     for param in params:
-      if param.requires_grad != False:
+      if param.requires_grad != True:
         assert param.device.startswith('DISK')
 
     # realize to CPU
