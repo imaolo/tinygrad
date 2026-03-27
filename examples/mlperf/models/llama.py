@@ -107,43 +107,6 @@ class Transformer:
     for layer in self.layers: h = layer(h, freqs_cis)
     logits = self.output(self.norm(h))
     return logits
-  
-  @property
-  def n_layers(self) -> int: return len(self.layers)
-
-  def shard(self, device:tuple[str, ...], mp:bool=False):
-    from tinygrad.nn.state import get_parameters, get_state_dict
-    if not mp:
-      for v in get_parameters(self):
-        v.shard_(device, axis=None)
-    else:
-      # TODO - LORA
-      for k, v in get_state_dict(self).items():
-        if 'scale' in k:
-          v.shard_(device, axis=None)
-        elif not self.fuse_wqkv and '.attention.wq' in k:
-          v.shard_(device, axis=0)
-        elif not self.fuse_wqkv and '.attention.wk' in k:
-          v.shard_(device, axis=0)
-        elif not self.fuse_wqkv and '.attention.wv' in k:
-          v.shard_(device, axis=0)
-        elif self.fuse_wqkv and '.attention.wqkv' in k:
-          v.shard_(device, axis=0)
-        elif '.attention.wo' in k:
-          v.shard_(device, axis=1)
-        elif '.feed_forward.w1.' in k:
-          v.shard_(device, axis=0)
-        elif '.feed_forward.w2.' in k:
-          v.shard_(device, axis=1)
-        elif '.feed_forward.w3.' in k:
-          v.shard_(device, axis=0)
-        elif 'tok_embeddings.weight' in k:
-          v.shard_(device, axis=0)
-        elif 'output.weight' in k:
-          v.shard_(device, axis=0)
-        else:
-          v.shard_(device, axis=None)
-
 
 def _fuse_qkv(q:Tensor, k:Tensor, v:Tensor, n_heads:int, n_kv_heads:int) -> Tensor:
   head_dim = q.shape[0] // n_heads
