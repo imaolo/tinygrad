@@ -14,7 +14,7 @@ export FUSE_WQKV=${FUSE_WQKV:-1}
 export VIZ=${VIZ:-0}
 export JITBEAM=${JITBEAM:-3}
 export WANDB=${WANDB:-0}
-export WANDB_PROJECT='MLPerf-llama2_70b_lora'
+export WANDB_PROJ='MLPerf-llama2_70b_lora'
 
 # export CC=/opt/homebrew/opt/llvm@18/bin/clang
 .venv/bin/python -u examples/mlperf/model_train.py

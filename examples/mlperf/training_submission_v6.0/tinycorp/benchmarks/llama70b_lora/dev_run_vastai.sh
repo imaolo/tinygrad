@@ -14,7 +14,7 @@ export FUSE_WQKV=${FUSE_WQKV:-1}
 export VIZ=${VIZ:-0}
 export JITBEAM=${JITBEAM:-3}
 export WANDB=${WANDB:-1}
-export WANDB_PROJECT='MLPerf-llama2_70b_lora'
+export WANDB_PROJ='MLPerf-llama2_70b_lora'
 export DEBUG_LORA=1
 export RESOLVE_MODEL_CPU=1
 
