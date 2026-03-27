@@ -1413,7 +1413,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     # realize to CPU
     for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-      param.to_("NULL:44").realize()
+      param.to_("CPU").realize()
 
   # no grad unless explicitly marked as such
   if llama2_70b_lora:
