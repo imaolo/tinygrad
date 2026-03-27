@@ -1429,7 +1429,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
 
   is_offload_optim = bool(getenv("OFFLOAD_OPTIM"))
-  is_fake_offload = Device.DEFAULT == "CPU"
+  is_fake_offload = Device.DEFAULT == "NULL"
   optim_device = ("CPU" if not is_fake_offload else "NULL:99") if is_offload_optim else None
   optim = GradAccClipAdamW(params, lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
                            eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
