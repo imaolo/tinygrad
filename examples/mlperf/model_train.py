@@ -1561,7 +1561,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
       gt = time.perf_counter()
       ret = optim_step()
-      if DEBUG_LORA: print("debug lora: ", model.lora_b[0].abs().max())
+      if DEBUG_LORA: print("debug lora: ", model.lora_b[0].abs().max().numpy())
       lr, grad_norm = ret[0].item(), ret[1].item()
       et = time.perf_counter()
 
