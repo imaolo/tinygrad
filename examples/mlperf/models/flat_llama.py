@@ -152,41 +152,25 @@ class FlatTransformer:
     if not mp:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
-
-
-
-
-      print("sharding flat llama")
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       if self.fuse_wqkv:
-        print("sharding wqkv")
         self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
       else:
         self.wq.shard_(device, axis=1).realize()            # (n_layers, n_heads*head_dim, dim) shard out
         self.wk.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
         self.wv.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
       if self.use_lora:
-        print("sharding lora")
         self.lora_a.shard_(device, axis=None).realize()
         self.lora_b.shard_(device, axis=1).realize()
         self.lora_a_wo.shard_(device, axis=2).realize()
         self.lora_b_wo.shard_(device, axis=None).realize()
-      print("sharding wo")
       self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
-      
-      print("sharding w*")
       self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
       self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
       self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      
-      print("sharding attention_norm")
       self.attention_norm.shard_(device, axis=None).realize()
-      
-      print("sharding ffn_norm and more")
       self.ffn_norm.shard_(device, axis=None).realize()
       self.norm.weight.shard_(device, axis=None).realize()
-
-      print("sharding ffn_norm and more")
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
       self.output.shard_(device, axis=1).realize()
       self.freqs_cis.shard_(device, axis=None).realize()
