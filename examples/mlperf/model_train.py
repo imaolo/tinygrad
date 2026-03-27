@@ -1411,15 +1411,15 @@ def train_llama3(llama2_70b_lora:bool=False):
       if param.requires_grad is None:
         assert param.device.startswith('DISK')
 
+    # realize to CPU
+    for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
+      param.to_("NULL:44").realize()
+
   # no grad unless explicitly marked as such
   if llama2_70b_lora:
     for p in params:
       if not p.requires_grad:
         p.requires_grad_(False)
-
-    # realize to CPU
-    for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-      param.to_("CPU").realize()
 
   model.shard(device, is_mp)
 
