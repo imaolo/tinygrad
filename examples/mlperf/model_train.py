@@ -1368,7 +1368,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     t_args = model_params|dict(max_context=SEQLEN)
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
+    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
     lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
 
     # ensure all weights will be consumed
