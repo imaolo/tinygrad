@@ -1354,8 +1354,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   model = (FlatTransformer if (FLAT:=getenv("FLAT", 1)) else Transformer)\
     (**model_params, max_context=SEQLEN, use_lora=llama2_70b_lora, fuse_wqkv=(FUSE_WQKV:=getenv("FUSE_WQKV", 1)))
 
-  print("created the model - ", model)
-
   if llama2_70b_lora:
     from tinygrad.nn.state import get_state_dict, safe_load, load_state_dict
     from extra.models.llama import convert_from_huggingface
@@ -1457,7 +1455,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   def minibatch(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.to(None).shard(device)
+    if is_mp: tokens = tokens.shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
