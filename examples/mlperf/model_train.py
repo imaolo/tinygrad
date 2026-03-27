@@ -1556,12 +1556,12 @@ def train_llama3(llama2_70b_lora:bool=False):
         mst = time.perf_counter()
         data_time += mst - ist
         losses.append(minibatch(tokens).item())
-        if DEBUG_LORA: print(model.lora_a[0][0].mean().numpy())
         dev_time += time.perf_counter() - mst
       if stopped: break
 
       gt = time.perf_counter()
       ret = optim_step()
+      if DEBUG_LORA: print("debug lora: ", model.lora_b[0].abs().max())
       lr, grad_norm = ret[0].item(), ret[1].item()
       et = time.perf_counter()
 
