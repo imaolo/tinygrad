@@ -1287,7 +1287,7 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad
   from examples.mlperf.models.llama import Transformer
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
@@ -1459,8 +1459,8 @@ def train_llama3(llama2_70b_lora:bool=False):
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
 
-    loss.backward()
-    assert all(p.grad is g for p,g in zip(optim.params, grads))
+    for g, new_g in zip(grads, loss.gradient(*optim.params)):
+      apply_grad(g, new_g.uop)
 
     loss_cpu = loss.flatten().float().to("CPU")
     return loss_cpu.realize(*grads)
