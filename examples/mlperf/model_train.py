@@ -1453,7 +1453,8 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   def minibatch(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.shard(device)
+    # to(None) is needed here for some reason, I guess it is created on NULL, or is still on disk??
+    if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
