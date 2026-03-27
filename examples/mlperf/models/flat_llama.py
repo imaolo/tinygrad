@@ -66,8 +66,8 @@ class FlatTransformer:
     # LoRA
     if not self.fuse_wqkv: assert not self.use_lora, "LoRA requires fused qkv"
     if self.use_lora:
-      self.lora_a, self.lora_b = self.create_lora_params(dim, lora_rank, wqkv_dim)
-      self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, lora_rank, wo_dim)
+      self.lora_a, self.lora_b = self.create_lora_params(dim, wqkv_dim, lora_rank)
+      self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, wo_dim, lora_rank)
 
     # FeedForward
     self.w1 = self.lin_per_layer(dim, hidden_dim)
@@ -90,9 +90,9 @@ class FlatTransformer:
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
-  def create_lora_params(self, dim:int, rank:float, out:float) -> tuple[Tensor, Tensor]:
-    a = self.lin_per_layer(dim, rank, requires_grad=True)
-    b = self.lin_per_layer(rank, out, zerod=True, requires_grad=True)
+  def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
+    a = self.lin_per_layer(in_dim, rank, requires_grad=True)
+    b = self.lin_per_layer(rank, out_dim, zerod=True, requires_grad=True)
     return a, b
 
   def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
