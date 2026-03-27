@@ -87,8 +87,8 @@ class FlatTransformer:
 
   def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
     dt = FP8_DTYPE if FP8 else None
-    if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt)
-    return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt)
+    if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
+    return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
   def create_lora_params(self, dim:int, rank:float, out:float) -> tuple[Tensor, Tensor]:
     a = self.lin_per_layer(dim, rank, requires_grad=True)
