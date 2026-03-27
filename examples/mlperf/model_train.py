@@ -1292,7 +1292,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
-  import tempfile
 
   BENCHMARK = getenv("BENCHMARK")
 
@@ -1413,15 +1412,14 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   # resolve model transitions on CPU to prevent dev:0 spikes
   if getenv("RESOLVE_MODEL_CPU", 0):
-    with tempfile.NamedTemporaryFile() as f:
-      # only makes sense for disk tensors
-      for param in params:
-        if param.requires_grad != False:
-          assert param.device.startswith('DISK')
+    # only makes sense for disk tensors
+    for param in params:
+      if param.requires_grad != False:
+        assert param.device.startswith('DISK')
 
-      # realize to CPU
-      for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-        param.to_("CPU").realize()
+    # realize to CPU
+    for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
+      param.to_("CPU").realize()
 
   model.shard(device, is_mp)
 
