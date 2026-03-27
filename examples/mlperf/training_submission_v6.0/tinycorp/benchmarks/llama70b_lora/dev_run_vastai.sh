@@ -18,5 +18,7 @@ export WANDB_PROJ='MLPerf-llama2_70b_lora'
 export DEBUG_LORA=1
 export RESOLVE_MODEL_CPU=1
 
+export CPU_OPT=1
+
 # export CC=/opt/homebrew/opt/llvm@18/bin/clang
 .venv/bin/python -u examples/mlperf/model_train.py
