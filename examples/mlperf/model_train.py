@@ -1337,7 +1337,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if WANDB:
     import wandb
     wandb_args = {"id": wandb_id, "resume": "must"} if (wandb_id := getenv("WANDB_RESUME", "")) else {}
-    wandb.init(config=config, **wandb_args, project="MLPerf-LLaMA3")
+    wandb.init(config=config, **wandb_args, project=getenv("WANDB_PROJ", "MLPerf-LLaMA3"))
 
   model_params = MODEL_PARAMS[getenv("LLAMA3_SIZE", "8B")]["args"] if not llama2_70b_lora else LLAMA2_70B_ARGS
   # vocab_size from the mixtral tokenizer
