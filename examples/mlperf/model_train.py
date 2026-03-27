@@ -1532,6 +1532,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       from examples.mlperf.dataloader import iterate_llama3_dataset
       return iterate_llama3_dataset(eval_dataset, EVAL_BS)
 
+  DEBUG_WEIGHTS = getenv("DEBUG_WEIGHT", 0)
   num_params = sum(p.numel() for p in params) - model_params["vocab_size"]*model_params["dim"]
   train_iter = get_train_iter()
   i, sequences_seen = resume_ckpt, 0
@@ -1554,6 +1555,7 @@ def train_llama3(llama2_70b_lora:bool=False):
         mst = time.perf_counter()
         data_time += mst - ist
         losses.append(minibatch(tokens).item())
+        if DEBUG_WEIGHTS: print(model.wqkv[0].mean().numpy())
         dev_time += time.perf_counter() - mst
       if stopped: break
 
