@@ -1394,12 +1394,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   params = get_parameters(model)
   assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
-  # no grad unless explicitly marked as such
-  if llama2_70b_lora:
-    for p in params:
-      if not p.requires_grad:
-        p.requires_grad_(False)
-
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape))
@@ -1414,8 +1408,14 @@ def train_llama3(llama2_70b_lora:bool=False):
   if getenv("RESOLVE_MODEL_CPU", 0):
     # only makes sense for disk tensors
     for param in params:
-      if param.requires_grad != True:
+      if param.requires_grad is None:
         assert param.device.startswith('DISK')
+
+  # no grad unless explicitly marked as such
+  if llama2_70b_lora:
+    for p in params:
+      if not p.requires_grad:
+        p.requires_grad_(False)
 
     # realize to CPU
     for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
