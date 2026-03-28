@@ -1411,12 +1411,6 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   # resolve model transitions on CPU to prevent dev:0 spikes
   if getenv("RESOLVE_MODEL_CPU", 0):
-    # only makes sense for disk tensors
-    for param in params:
-      if param.requires_grad is None:
-        assert param.device.startswith('DISK')
-
-    # realize to CPU
     for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
       param.to_("CPU").realize()
 
