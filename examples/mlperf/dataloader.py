@@ -532,6 +532,7 @@ def batch_load_train_stable_diffusion(urls:str, BS:int):
 
 # llama3
 
+# ai slop - dont fully understand
 @functools.lru_cache(maxsize=4)
 def _load_llama2_70b_lora_split(base_dir:str, split:str):
   from datasets import load_dataset
