@@ -1315,16 +1315,21 @@ def train_llama3(llama2_70b_lora:bool=False):
   EVAL_FREQ          = config["EVAL_FREQ"]              = getenv("EVAL_FREQ", 46080)
   EVAL_BS            = config["EVAL_BS"]                = getenv("EVAL_BS", 16)
   EVAL_TARGET        = config["EVAL_TARGET"]            = getenv("EVAL_TARGET", 5.6)
+  ADAM_BETA_1        = config["ADAM_BETA_1"]            = getenv("ADAM_BETA_1", 0.9)
+  ADAM_BETA_2        = config["ADAM_BETA_2"]            = getenv("ADAM_BETA_2", 0.95)
+  ADAM_EPSILON       = config["ADAM_EPSILON"]           = getenv("ADAM_EPSILON", 1e-5)
+  WEIGHT_DECAY       = config["WEIGHT_DECAY"]           = getenv("WEIGHT_DECAY", 0.1)
+  MAX_GRAD_NORM      = config["MAX_GRAD_NORM"]          = getenv("MAX_GRAD_NORM", 1.0)
 
   # LR=1e-4 TRAIN_ON_VAL=1 DEFAULT_FLOAT=bfloat16 JITBEAM=2 OPTIM_DTYPE=bfloat16 LLAMA3_SIZE=1B WARMUP_STEPS=36 DECAY_STEPS=360 SEQLEN=512 PYTHONPATH=. DEV=AMD AMD_LLVM=0 MODEL=llama3 python3 examples/mlperf/model_train.py
   # trains to 7
 
-  opt_adamw_beta_1 = 0.9
-  opt_adamw_beta_2 = 0.95
-  opt_adamw_epsilon = 1e-5
-  opt_adamw_weight_decay = 0.1
+  opt_adamw_beta_1 = ADAM_BETA_1
+  opt_adamw_beta_2 = ADAM_BETA_2
+  opt_adamw_epsilon = ADAM_EPSILON
+  opt_adamw_weight_decay = WEIGHT_DECAY
 
-  opt_gradient_clip_norm = 1.0
+  opt_gradient_clip_norm = MAX_GRAD_NORM
   opt_learning_rate_warmup_steps = WARMUP_STEPS
   opt_learning_rate_decay_steps = MAX_STEPS - opt_learning_rate_warmup_steps
   opt_base_learning_rate = LR
@@ -1432,7 +1437,8 @@ def train_llama3(llama2_70b_lora:bool=False):
   is_fake_offload = Device.DEFAULT == "NULL"
   optim_device = ("CPU" if not is_fake_offload else "NULL:99") if is_offload_optim else None
   optim = GradAccClipAdamW(params, lr=0.0, b1=opt_adamw_beta_1, b2=opt_adamw_beta_2,
-                           eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc, device=optim_device)
+                           eps=opt_adamw_epsilon, weight_decay=opt_adamw_weight_decay, grad_acc=grad_acc,
+                           clip_norm=opt_gradient_clip_norm, device=optim_device)
 
   # init grads
   for p in optim.params:
