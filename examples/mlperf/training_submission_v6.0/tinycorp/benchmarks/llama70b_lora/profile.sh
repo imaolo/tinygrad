@@ -1,7 +1,6 @@
 #!/bin/bash
 export BENCHMARK=5
 export EVAL_BS=0
-export FAKEDATA=1
 export LOAD_MODEL=0
 export WANDB=0
 export ZEROS=1
