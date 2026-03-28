@@ -12,6 +12,7 @@ export MP="${MP:-4}"
 export FLAT=${FLAT:-1}
 export FUSE_WQKV=${FUSE_WQKV:-1}
 export VIZ=${VIZ:-0}
+export ZEROS=${ZEROS:-0}
 export JITBEAM=${JITBEAM:-3}
 export WANDB=${WANDB:-0}
 export WANDB_PROJ='MLPerf-llama2_70b_lora'
