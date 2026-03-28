@@ -1358,7 +1358,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   model = (FlatTransformer if (FLAT:=getenv("FLAT", 1)) else Transformer)\
     (**model_params, max_context=SEQLEN, use_lora=llama2_70b_lora, fuse_wqkv=(FUSE_WQKV:=getenv("FUSE_WQKV", 1)))
 
-  if llama2_70b_lora:
+  if llama2_70b_lora and getenv("LOAD_MODEL", 1):
     from tinygrad.nn.state import get_state_dict, safe_load, load_state_dict
     from extra.models.llama import convert_from_huggingface
     from examples.mlperf.models.test_flat_llama import copy_weights as copy_weights_flat
