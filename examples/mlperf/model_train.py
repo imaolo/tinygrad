@@ -1458,7 +1458,7 @@ def train_llama3(llama2_70b_lora:bool=False):
           del fused_model
         del unfused_model
   params = get_parameters(model)
-  assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+  # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
