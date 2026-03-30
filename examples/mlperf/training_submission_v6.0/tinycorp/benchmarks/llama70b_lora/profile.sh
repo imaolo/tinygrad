@@ -1,5 +1,5 @@
 #!/bin/bash
-export BENCHMARK=5
+export MAX_STEPS=5
 export EVAL_BS=0
 export WANDB=0
 export CACHE_MODEL=${CACHE_MODEL:-1}
