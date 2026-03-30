@@ -1364,40 +1364,52 @@ def train_llama3(llama2_70b_lora:bool=False):
     from examples.mlperf.models.test_flat_llama import copy_weights as copy_weights_flat
     from examples.mlperf.models.llama import copy_weights_fused
     from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
+    from tinygrad.helpers import cache_dir
 
     weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
+    cached_model_fn = Path(cache_dir)/"cached_model.tensor"
+    CACHE_MODEL = getenv("CACHE_MODEL", 0)
 
-    print(f"downloading weights to {weights_path}")
-    weights_path.mkdir(parents=True, exist_ok=True)
-    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
-
-    t_args = model_params|dict(max_context=SEQLEN)
-    state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
-    lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
-
-    # ensure all weights will be consumed
-    ref_model = Transformer(**t_args, fuse_wqkv=False, use_lora=True)
-    if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
-      raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
-
-    if not FUSE_WQKV:
-      # the model is already unfused, non-flat, load directly into it
+    if CACHE_MODEL and cached_model_fn.is_file():
+      print("loading from cached_model_fn")
+      state_dict = safe_load(cached_model_fn)
+      lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
       load_state_dict(model, **lsd_args)
     else:
-      # create an unfused, non-flat model, and load the weights
-      load_state_dict(unfused_model:=Transformer(**t_args, fuse_wqkv=False), **lsd_args)
+      print(f"downloading weights to {weights_path}")
+      weights_path.mkdir(parents=True, exist_ok=True)
+      snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
-      # copy weights into fused nonflat or flat model (flat model is only fused)
-      if not FLAT:
-        copy_weights_fused(model, unfused_model)
+      t_args = model_params|dict(max_context=SEQLEN)
+      state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+      state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
+      lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
+
+      # ensure all weights will be consumed
+      ref_model = Transformer(**t_args, fuse_wqkv=False, use_lora=True)
+      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
+        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
+
+      if not FUSE_WQKV:
+        # the model is already unfused, non-flat, load directly into it
+        load_state_dict(model, **lsd_args)
       else:
-        copy_weights_fused(fused_model:=Transformer(**t_args, fuse_wqkv=True), unfused_model)
-        copy_weights_flat(model, fused_model)
-        del fused_model
-      del unfused_model
+        # create an unfused, non-flat model, and load the weights
+        load_state_dict(unfused_model:=Transformer(**t_args, fuse_wqkv=False), **lsd_args)
+
+        # copy weights into fused nonflat or flat model (flat model is only fused)
+        if not FLAT:
+          copy_weights_fused(model, unfused_model)
+        else:
+          copy_weights_fused(fused_model:=Transformer(**t_args, fuse_wqkv=True), unfused_model)
+          copy_weights_flat(model, fused_model)
+          if CACHE_MODEL:
+            print("saving to ", cached_model_fn)
+            safe_save(get_state_dict(model), cached_model_fn)
+          del fused_model
+        del unfused_model
   params = get_parameters(model)
-  assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+  # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):

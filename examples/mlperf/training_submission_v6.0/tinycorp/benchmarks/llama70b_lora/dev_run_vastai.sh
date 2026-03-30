@@ -10,5 +10,6 @@ export ZEROS=${ZEROS:-0}
 export FAKEDATA=${FAKEDATA:-0}
 export EVAL_BS=${EVAL_BS:-1}
 export BENCHMARK=${BENCHMARK:-0}
+export CACHE_MODEL=${CACHE_MODEL:-0}
 
 exec bash examples/mlperf/training_submission_v6.0/tinycorp/benchmarks/llama70b_lora/dev_run.sh
