@@ -1,7 +1,7 @@
 #!/bin/bash
 export BENCHMARK=5
 export EVAL_BS=0
-export LOAD_MODEL=0
+export LOAD_MODEL=1
 export WANDB=0
 export ZEROS=1
 export RESOLVE_MODEL_CPU="${RESOLVE_MODEL_CPU:-1}"
