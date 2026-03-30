@@ -1358,6 +1358,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   model = (FlatTransformer if (FLAT:=getenv("FLAT", 1)) else Transformer)\
     (**model_params, max_context=SEQLEN, use_lora=llama2_70b_lora, fuse_wqkv=(FUSE_WQKV:=getenv("FUSE_WQKV", 1)))
 
+  loaded_from_cache = False
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
     from tinygrad.nn.state import get_state_dict, safe_load, load_state_dict
     from extra.models.llama import convert_from_huggingface
@@ -1375,6 +1376,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       state_dict = safe_load(cached_model_fn)
       lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
       load_state_dict(model, **lsd_args)
+      loaded_from_cache = True
       print("done loading")
     else:
       print(f"downloading weights to {weights_path}")
@@ -1420,7 +1422,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
   # resolve model transitions on CPU to prevent dev:0 spikes
-  if getenv("RESOLVE_MODEL_CPU", 0):
+  if getenv("RESOLVE_MODEL_CPU", 0) and not loaded_from_cache:
     for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
       param.to_("CPU").realize()
 
