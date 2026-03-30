@@ -1378,6 +1378,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   opt_adamw_epsilon = ADAM_EPSILON
   opt_adamw_weight_decay = WEIGHT_DECAY
 
+  opt_gradient_clip_norm = MAX_GRAD_NORM
   opt_learning_rate_warmup_steps = WARMUP_STEPS
   opt_learning_rate_decay_steps = MAX_STEPS - opt_learning_rate_warmup_steps
   opt_base_learning_rate = LR
