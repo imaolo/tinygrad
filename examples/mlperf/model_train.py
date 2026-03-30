@@ -1406,6 +1406,7 @@ def train_llama3(llama2_70b_lora:bool=False):
           if CACHE_MODEL:
             print("saving to ", cached_model_fn)
             safe_save(get_state_dict(model), cached_model_fn)
+            print("done saving")
           del fused_model
         del unfused_model
   params = get_parameters(model)
