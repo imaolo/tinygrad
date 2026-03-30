@@ -7,7 +7,7 @@ export NULL_ALLOW_COPYOUT=1
 
 export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"
-export BS="${BS:-2}"
+export BS="${BS:-1}"
 export MP="${MP:-4}"
 export FLAT=${FLAT:-1}
 export FUSE_WQKV=${FUSE_WQKV:-1}
@@ -16,7 +16,7 @@ export ZEROS=${ZEROS:-0}
 export JITBEAM=${JITBEAM:-3}
 export WANDB=${WANDB:-0}
 export WANDB_PROJ='MLPerf-llama2_70b_lora'
-export GRADIENT_ACC_STEPS=${GRADIENT_ACC_STEPS:-4}
+export GRADIENT_ACC_STEPS=${GRADIENT_ACC_STEPS:-8}
 export CACHE_MODEL=${CACHE_MODEL:-0}
 
 export ALL2ALL=${ALL2ALL:-1}
