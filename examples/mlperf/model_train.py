@@ -1404,10 +1404,6 @@ def train_llama3(llama2_70b_lora:bool=False):
         else:
           copy_weights_fused(fused_model:=Transformer(**t_args, fuse_wqkv=True), unfused_model)
           copy_weights_flat(model, fused_model)
-          if CACHE_MODEL:
-            print("saving to ", cached_model_fn)
-            safe_save(get_state_dict(model), cached_model_fn)
-            print("done saving")
           del fused_model
         del unfused_model
   params = get_parameters(model)
@@ -1427,6 +1423,11 @@ def train_llama3(llama2_70b_lora:bool=False):
   if getenv("RESOLVE_MODEL_CPU", 0):
     for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
       param.to_("CPU").realize()
+
+    if CACHE_MODEL:
+      print("saving to ", cached_model_fn)
+      safe_save(get_state_dict(model), cached_model_fn)
+      print("done saving")
 
   # no grad unless explicitly marked as such
   if llama2_70b_lora:
