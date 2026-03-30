@@ -1375,6 +1375,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       state_dict = safe_load(cached_model_fn)
       lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
       load_state_dict(model, **lsd_args)
+      print("done loading")
     else:
       print(f"downloading weights to {weights_path}")
       weights_path.mkdir(parents=True, exist_ok=True)
