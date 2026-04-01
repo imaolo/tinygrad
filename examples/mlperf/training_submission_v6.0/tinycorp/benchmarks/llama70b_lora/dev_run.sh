@@ -4,6 +4,7 @@ export PYTHONPATH="."
 export DEFAULT_FLOAT="bfloat16" OPTIM_DTYPE="bfloat16"
 export MODEL="llama2_70b_lora"
 export NULL_ALLOW_COPYOUT=1
+export LORA_DTYPE='float32'
 
 export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"

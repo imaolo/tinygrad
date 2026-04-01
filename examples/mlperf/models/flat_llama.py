@@ -86,13 +86,14 @@ class FlatTransformer:
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
   def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
-    dt = FP8_DTYPE if FP8 else None
+    dt = FP8_DTYPE if FP8 and 'dtype' not in kwargs else kwargs.pop('dtype', None)
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
-    a = self.lin_per_layer(in_dim, rank, requires_grad=True)
-    b = self.lin_per_layer(rank, out_dim, zerod=True, requires_grad=True)
+    kwargs = {'dtype': LORA_DTYPE} if (LORA_DTYPE:=getenv('LORA_DTYPE', '')) else {}
+    a = self.lin_per_layer(in_dim, rank, requires_grad=True, **kwargs)
+    b = self.lin_per_layer(rank, out_dim, zerod=True, requires_grad=True, **kwargs)
     return a, b
 
   def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
