@@ -363,9 +363,9 @@ def is_dtype_supported(dtype:DType, device:str|None=None, arch:str|None=None) ->
                                       and dtypes.long not in EMULATED_DTYPES.tolist(dtypes))
   return True
 
-if PROFILE:
-  @atexit.register
-  def finalize_profile():
+@atexit.register
+def finalize_profile():
+  if PROFILE:
     devs = [Device[d] for d in Device._opened_devices]
     for dev in devs: dev.synchronize()
     for dev in devs: dev._at_profile_finalize()
