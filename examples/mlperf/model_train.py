@@ -1457,7 +1457,6 @@ def train_llama3(llama2_70b_lora:bool=False):
           copy_weights_flat(model, fused_model)
           del fused_model
         del unfused_model
-  if getenv("QUANTIZE_LOADED_WEIGHTS", 0): model.quantize_base_weights()
   params = get_parameters(model)
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
@@ -1487,6 +1486,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       if not p.requires_grad:
         p.requires_grad_(False)
 
+  if getenv("QUANTIZE_LOADED_WEIGHTS", 0): model.quantize_base_weights()
   model.shard(device, is_mp)
 
   print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
