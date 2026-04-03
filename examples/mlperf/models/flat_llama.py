@@ -17,7 +17,8 @@ from tinygrad.helpers import Timing, colored, GlobalCounters, profile_marker
 from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
 
-FP8 = getenv("FP8", 0)
+QUANTIZE_LOADED_WEIGHTS = getenv("QUANTIZE_LOADED_WEIGHTS", 0)
+FP8 = getenv("FP8", QUANTIZE_LOADED_WEIGHTS)
 
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_MAX = 448.0
@@ -96,17 +97,16 @@ class FlatTransformer:
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
   def quantize_base_weights(self):
-    if not FP8: return
     for name in self.quantizeable_weight_names:
       weight: Tensor = getattr(self, name)
-      # assert weight.dtype is dtypes.bfloat16
+      assert weight.dtype is dtypes.bfloat16
 
       weight_fp8, scale_fp8 = quantize_weight_fp8(weight)
       weight.replace(weight_fp8)
       setattr(self, name+'_scale', scale_fp8)
 
   def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
-    dt = FP8_DTYPE if FP8 and 'dtype' not in kwargs else kwargs.pop('dtype', None)
+    dt = FP8_DTYPE if FP8 and not QUANTIZE_LOADED_WEIGHTS and 'dtype' not in kwargs else kwargs.pop('dtype', None)
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
@@ -175,7 +175,7 @@ class FlatTransformer:
 
   def _shard(self, weight_name:str, device:tuple[str, ...], axis:int, scale_axis:int|None=None):
     getattr(self, weight_name).shard_(device, axis=axis).realize()
-    if FP8:
+    if QUANTIZE_LOADED_WEIGHTS:
       getattr(self, weight_name+'_scale').shard_(device, axis=scale_axis).realize()
 
   def shard(self, device:tuple[str, ...], mp:bool=False, intermediate_fn:str|None=None):

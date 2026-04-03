@@ -1457,7 +1457,7 @@ def train_llama3(llama2_70b_lora:bool=False):
           copy_weights_flat(model, fused_model)
           del fused_model
         del unfused_model
-  if getenv("FP8", 0): model.quantize_base_weights()
+  if getenv("QUANTIZE_LOADED_WEIGHTS", 0): model.quantize_base_weights()
   params = get_parameters(model)
   # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
 
