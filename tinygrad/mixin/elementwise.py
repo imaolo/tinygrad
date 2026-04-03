@@ -4,14 +4,12 @@ from tinygrad.uop import Ops
 from tinygrad.dtype import dtypes, ConstType, least_upper_dtype, least_upper_float
 from tinygrad.helpers import polyN
 from tinygrad.mixin.dtype import DTypeMixin
+from tinygrad.mixin.creation import CreationMixin
 
 
-class ElementwiseMixin(DTypeMixin):
+class ElementwiseMixin(DTypeMixin, CreationMixin):
   # required to implement
   def alu(self, op: Ops, *src: Self) -> Self:
-    raise NotImplementedError
-
-  def const_like(self, b: ConstType) -> Self:
     raise NotImplementedError
 
   def _broadcasted(self, y: Self | ConstType, reverse: bool = False) -> tuple[Self, Self]:
@@ -319,11 +317,9 @@ class ElementwiseMixin(DTypeMixin):
     return ((self-m).exp() + (self._broadcasted(other)[1]-m).exp()).log() + m
 
   def where(self, x: Self | ConstType, y: Self | ConstType) -> Self:
-    if isinstance(x, type(self)):
-      return self.alu(Ops.WHERE, x, x.ufix(y))
-    if isinstance(y, type(self)):
-      return self.alu(Ops.WHERE, y.ufix(x), y)
-    raise RuntimeError("where needs at least one UOp arg")
+    ref: Self = x if isinstance(x, type(self)) else y if isinstance(y, type(self)) else \
+      self.cast(least_upper_dtype(dtypes.from_py(x), dtypes.from_py(y)))
+    return self.alu(Ops.WHERE, ref.ufix(x), ref.ufix(y))
 
   def threefry(self, seed: Self) -> Self:
     return self.alu(Ops.THREEFRY, seed)
@@ -506,6 +502,26 @@ class ElementwiseMixin(DTypeMixin):
     ```
     """
     return (self.isinf() | self.isnan()).logical_not()
+
+  def isclose(self, other, rtol:float=1e-05, atol:float=1e-08, equal_nan=False) -> Self:
+    """
+    Returns a new tensor with element-wise comparison of closeness to `other` within a tolerance.
+
+    The `rtol` and `atol` keyword arguments control the relative and absolute tolerance of the comparison.
+
+    By default, two `NaN` values are not close to each other. If `equal_nan` is `True`, two `NaN` values are considered close.
+
+    ```python exec="true" source="above" session="tensor" result="python"
+    print(Tensor([1e-7, 1e-8, 1e-9, float('nan')]).isclose(Tensor([0.0, 0.0, 0.0, float('nan')])).numpy())
+    ```
+    ```python exec="true" source="above" session="tensor" result="python"
+    print(Tensor([float('nan')]).isclose(Tensor([float('nan')]), equal_nan=True).numpy())
+    ```
+    """
+    is_finite_close = self.isfinite() & other.isfinite() & ((self - other).abs() <= atol + rtol * other.abs())
+    is_infinite_close = (self.isinf() | other.isinf()) & (self == other)
+    is_nan_close = (self.isnan() & other.isnan()) & equal_nan
+    return is_finite_close | is_infinite_close | is_nan_close
 
   def ceil(self) -> Self:
     """

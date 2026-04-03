@@ -1462,7 +1462,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
-      v = v.assign(Tensor.empty(v.shape))
+      v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 
   is_dp = (DP := getenv("DP", 1)) > 1
   is_mp = (MP := getenv("MP", 1)) > 1
