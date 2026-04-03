@@ -6,7 +6,7 @@ export MODEL="llama2_70b_lora"
 export NULL_ALLOW_COPYOUT=1
 export LORA_DTYPE='float32'
 export OFFLOAD_OPTIM=${OFFLOAD_OPTIM:-1}
-export FP8=${FP8:-1}
+export FP8=${FP8:-0}
 
 export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"
