@@ -28,11 +28,20 @@ def quantize_fp8(x:Tensor):
   x_clamped = x_scaled + (x_scaled.detach().clamp(-FP8_MAX, FP8_MAX) - x_scaled.detach())  # STE
   return x_clamped.cast(FP8_DTYPE), scale.float().reciprocal()
 
-def matmul(x:Tensor, w:Tensor) -> Tensor:
-  if not FP8: return x @ w.T
-  # weights are already FP8, just quantize activations
+def quantize_weight_fp8(w:Tensor):
+  scale = FP8_MAX / (w.abs().max(axis=-1, keepdim=True).detach() + 1e-8)
+  w_scaled = w * scale
+  w_fp8 = w_scaled.detach().clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE)
+  return w_fp8, scale.float().reciprocal().reshape(w.shape[:-1])
+
+def matmul(x:Tensor, w:Tensor, w_scale:Tensor|None=None) -> Tensor:
+  if not FP8 or w_scale is None or w.dtype != FP8_DTYPE: return x @ w.T
   x_fp8, x_scale = quantize_fp8(x)
-  return x_fp8.dot(w.T, dtype=dtypes.float) * x_scale
+  return x_fp8.dot(w.T, dtype=dtypes.float) * x_scale * w_scale
+
+def matmul_lora(x:Tensor, w:Tensor) -> Tensor:
+  if not FP8: return x @ w.T
+  return x.float().dot(w.T.float(), dtype=dtypes.float)
 
 def rmsnorm(x_in:Tensor, eps:float):
   x = x_in.float()
@@ -52,6 +61,7 @@ class FlatTransformer:
     self.lora_dropout = lora_dropout
     self.fuse_wqkv = fuse_wqkv
     self.use_lora = use_lora
+    self.quantizeable_weight_names = (("wqkv",) if self.fuse_wqkv else ("wq", "wk", "wv")) + ("wo", "w1", "w2", "w3", "output")
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
 
     # Attention
@@ -85,6 +95,16 @@ class FlatTransformer:
     self.output = Tensor.normal(1, vocab_size, dim, mean=0.0, std=0.02)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
+  def quantize_base_weights(self):
+    if not FP8: return
+    for name in self.quantizeable_weight_names:
+      weight: Tensor = getattr(self, name)
+      # assert weight.dtype is dtypes.bfloat16
+
+      weight_fp8, scale_fp8 = quantize_weight_fp8(weight)
+      weight.replace(weight_fp8)
+      setattr(self, name+'_scale', scale_fp8)
+
   def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
     dt = FP8_DTYPE if FP8 and 'dtype' not in kwargs else kwargs.pop('dtype', None)
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
@@ -97,19 +117,20 @@ class FlatTransformer:
     return a, b
 
   def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
-    out = matmul(x.dropout(self.lora_dropout), lora_a)
-    out = matmul(out, lora_b)
+    out = matmul_lora(x.dropout(self.lora_dropout), lora_a)
+    out = matmul_lora(out, lora_b)
     return out * self.lora_scale
     
-  def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wo:Tensor, wqkv:Tensor|None=None,
-              wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,
-              lora_a:Tensor|None=None, lora_b: Tensor|None=None,
-              lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None):
+  def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor,
+                wo:Tensor, wqkv:Tensor|None=None, wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,            # weights
+                wqkv_scale:Tensor|None=None, wq_scale:Tensor|None=None,                                                     # quantize scales
+                wk_scale:Tensor|None=None, wv_scale:Tensor|None=None, wo_scale:Tensor|None=None,
+                lora_a:Tensor|None=None, lora_b: Tensor|None=None, lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None): # lora weights
     x = rmsnorm(x, self.norm_eps) * attention_norm
     bsz, seqlen, _ = x.shape
 
     if wqkv is not None:
-      xqkv = matmul(x, wqkv)
+      xqkv = matmul(x, wqkv, wqkv_scale)
       if self.use_lora:
         xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
       xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
@@ -118,62 +139,71 @@ class FlatTransformer:
       xv = xqkv[:, :, :, self.n_rep+1].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
     else:
       assert wq is not None and wk is not None and wv is not None
-      xq = matmul(x, wq).reshape(bsz, seqlen, self.n_heads, self.head_dim)
-      xk = matmul(x, wk).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
-      xv = matmul(x, wv).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+      xq = matmul(x, wq, wq_scale).reshape(bsz, seqlen, self.n_heads, self.head_dim)
+      xk = matmul(x, wk, wk_scale).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
+      xv = matmul(x, wv, wv_scale).reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
 
     xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
     xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
     attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True).transpose(1, 2)
     attn = attn.reshape(bsz, seqlen, -1)
-    out = matmul(attn, wo)
+    out = matmul(attn, wo, wo_scale)
     if self.use_lora:
       out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
     return out
 
-  def feed_forward(self, x:Tensor, ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor):
+  def feed_forward(self, x:Tensor, ffn_norm:Tensor,
+                   w1:Tensor, w2:Tensor, w3:Tensor,                                   # weights
+                   w1_scale:Tensor|None, w2_scale:Tensor|None, w3_scale:Tensor|None): # quantize scales
     x = rmsnorm(x, self.norm_eps) * ffn_norm
-    x_w1 = matmul(x, w1).silu()
-    x_w3 = matmul(x.contiguous_backward(), w3)
-    return matmul(x_w1 * x_w3, w2)
+    x_w1 = matmul(x, w1, w1_scale).silu()
+    x_w3 = matmul(x.contiguous_backward(), w3, w3_scale)
+    return matmul(x_w1 * x_w3, w2, w2_scale)
 
   @function(precompile=True, precompile_backward=True)
-  def run_layer(self, x:Tensor, freqs_cis:Tensor,
-                attention_norm:Tensor, wo:Tensor,
-                ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
+  def run_layer(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wo:Tensor, ffn_norm:Tensor,
+                w1:Tensor, w2:Tensor, w3:Tensor,                                                                              # weights
                 wqkv:Tensor|None=None, wq:Tensor|None=None, wk:Tensor|None=None, wv:Tensor|None=None,
-                lora_a: Tensor|None=None, lora_b:Tensor|None=None,
-                lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
+                wo_scale:Tensor|None=None, w1_scale:Tensor|None=None, w2_scale:Tensor|None=None, w3_scale:Tensor|None=None,   # quantize scales
+                wqkv_scale:Tensor|None=None, wq_scale:Tensor|None=None, wk_scale:Tensor|None=None, wv_scale:Tensor|None=None, 
+                lora_a: Tensor|None=None, lora_b:Tensor|None=None, lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):  # lora params
     h = x + self.attention(x, freqs_cis, attention_norm, wo, wqkv=wqkv, wq=wq, wk=wk, wv=wv,
+                           wqkv_scale=wqkv_scale, wo_scale=wo_scale,
+                           wq_scale=wq_scale, wk_scale=wk_scale, wv_scale=wv_scale,
                            lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo)
-    return h + self.feed_forward(h, ffn_norm, w1, w2, w3)
+    return h + self.feed_forward(h, ffn_norm, w1, w2, w3, w1_scale, w2_scale, w3_scale)
+
+  def _shard(self, weight_name:str, device:tuple[str, ...], axis:int, scale_axis:int|None=None):
+    getattr(self, weight_name).shard_(device, axis=axis).realize()
+    if FP8:
+      getattr(self, weight_name+'_scale').shard_(device, axis=scale_axis).realize()
 
   def shard(self, device:tuple[str, ...], mp:bool=False, intermediate_fn:str|None=None):
-    from tinygrad.nn.state import get_parameters
+    from tinygrad.nn.state import get_parameters, get_state_dict
     if not mp:
       for v in get_parameters(self): v.shard_(device, axis=None)
     else:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       if self.fuse_wqkv:
-        self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
+        self._shard('wqkv', device, 1, 1)
       else:
-        self.wq.shard_(device, axis=1).realize()            # (n_layers, n_heads*head_dim, dim) shard out
-        self.wk.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
-        self.wv.shard_(device, axis=1).realize()            # (n_layers, n_kv_heads*head_dim, dim) shard out
+        self._shard('wq', device, 1, 1)
+        self._shard('wk', device, 1, 1)
+        self._shard('wv', device, 1, 1)
       if self.use_lora:
         self.lora_a.shard_(device, axis=None).realize()
         self.lora_b.shard_(device, axis=1).realize()
         self.lora_a_wo.shard_(device, axis=2).realize()
         self.lora_b_wo.shard_(device, axis=None).realize()
-      self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
-      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
-      self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
-      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self._shard('wo', device, 2)
+      self._shard('w1', device, 1, 1)
+      self._shard('w2', device, 2)
+      self._shard('w3', device, 1, 1)
       self.attention_norm.shard_(device, axis=None).realize()
       self.ffn_norm.shard_(device, axis=None).realize()
       self.norm.weight.shard_(device, axis=None).realize()
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
-      self.output.shard_(device, axis=1).realize()
+      self._shard('output', device, 1, 1)
       self.freqs_cis.shard_(device, axis=None).realize()
 
   def __call__(self, tokens:Tensor):
@@ -182,11 +212,10 @@ class FlatTransformer:
     for i in range(self.n_layers):
       attn_kwargs = {"wqkv": self.wqkv[i]} if self.fuse_wqkv else {"wq": self.wq[i], "wk": self.wk[i], "wv": self.wv[i]}
       lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if self.use_lora else {}
-      h = self.run_layer(h, freqs_cis,
-                         self.attention_norm[i], self.wo[i],
-                         self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
-                         **attn_kwargs, **lora_kwargs)
-    logits = self.norm(h) @ self.output[0].T
+      scale_args = {(scale_name:=(weight_name+'_scale')): getattr(self, scale_name)[i] for weight_name in set(self.quantizeable_weight_names)-set(['output'])} if FP8 else {}
+      h = self.run_layer(h, freqs_cis, self.attention_norm[i], self.wo[i], self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
+                         **attn_kwargs, **lora_kwargs, **scale_args)
+    logits = matmul(self.norm(h), self.output[0], self.output_scale[0] if FP8 else None)
     return logits
 
 def _get_pads(uop:UOp) -> list[UOp]:
