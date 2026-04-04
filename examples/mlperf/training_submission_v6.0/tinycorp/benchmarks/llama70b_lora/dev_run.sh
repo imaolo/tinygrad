@@ -7,7 +7,7 @@ export NULL_ALLOW_COPYOUT=1
 export LORA_DTYPE=${LORA_DTYPE:''}
 export OFFLOAD_OPTIM=${OFFLOAD_OPTIM:-1}
 export MIXED_PRECISION=${MIXED_PRECISION:-1}
-export FP8=${FP8:-1}
+export FP8=${FP8:-0}
 
 export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"
