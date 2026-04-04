@@ -96,6 +96,11 @@ class FlatTransformer:
     self.output = Tensor.normal(1, vocab_size, dim, mean=0.0, std=0.02)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
+    if getenv("MIXED_PRECISION", 0):
+      self.attention_norm = self.attention_norm.cast('float32')
+      self.ffn_norm = self.ffn_norm.cast('float32')
+      self.norm.weight = self.norm.weight.cast('float32')
+
   def quantize_base_weights(self):
     for name in self.quantizeable_weight_names:
       weight: Tensor = getattr(self, name)
