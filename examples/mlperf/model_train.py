@@ -1458,7 +1458,7 @@ def train_llama3(llama2_70b_lora:bool=False):
           del fused_model
         del unfused_model
   params = get_parameters(model)
-  # assert params and all(p.dtype == dtypes.bfloat16 for p in params)
+  assert params and all(p.dtype in {dtypes.bfloat16, dtypes.float32} for p in params)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
@@ -1627,6 +1627,9 @@ def train_llama3(llama2_70b_lora:bool=False):
           break
         mst = time.perf_counter()
         data_time += mst - ist
+        if minibatch.captured is not None and getenv("TARGETED_PROFILE", 0):
+          from tinygrad.helpers import PROFILE
+          PROFILE.value = -1
         losses.append(minibatch(tokens).item())
         dev_time += time.perf_counter() - mst
       if stopped: break
