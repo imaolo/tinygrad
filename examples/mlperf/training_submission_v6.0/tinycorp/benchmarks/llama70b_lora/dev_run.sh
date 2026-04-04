@@ -13,6 +13,7 @@ export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"
 export BS="${BS:-1}"
 export MP="${MP:-4}"
+export DP="${DP:-1}"
 export FLAT=${FLAT:-1}
 export FUSE_WQKV=${FUSE_WQKV:-1}
 export VIZ=${VIZ:-0}
