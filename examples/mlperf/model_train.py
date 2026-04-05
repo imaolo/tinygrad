@@ -1518,6 +1518,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     load_state_dict(scheduler, safe_load(fn), realize=False)
 
   @TinyJit
+  @Tensor.train()
   def minibatch(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
     # to(None) is needed here for some reason, I guess it is created on NULL, or is still on disk??
