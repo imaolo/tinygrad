@@ -145,24 +145,6 @@ def resolve_call(c:UOp, allow_param_mismatch=True) -> UOp|None:
     if p.dtype != a.dtype: raise TypeError(f"arg {i} dtype mismatch: expected {p.dtype}, got {a.dtype}")
   return c.src[0].substitute(dict_map, walk=True)
 
-
-def push_disk_copy_through_cast(cast:UOp, dev:UOp):
-  if not cast.device.startswith('DISK'): return None
-  return cast.replace(src=(cast.src[0].copy_to_device(dev),))
-
-def push_disk_copy_through_add(add:UOp, dev:UOp):
-  if not add.device.startswith('DISK'): return None
-  assert all(src.device.startswith('DISK') for src in add.src)
-  return add.replace(src=(add.src[0].copy_to_device(dev),add.src[1].copy_to_device(dev)))
-
-def push_disk_copy_through_reshape(reshape:UOp, dev:UOp):
-  if not reshape.device.startswith('DISK'): return None
-  return reshape.replace(src=(reshape.src[0].copy_to_device(dev),) + reshape.src[1:])
-
-def push_shrink_through_elementwise(shrink:UOp, ew:UOp):
-  new_src = tuple(s.shrink(shrink.marg) if s._shape == ew._shape else s for s in ew.src)
-  return ew.replace(src=new_src) if new_src != ew.src else None
-
 earliest_rewrites = mop_cleanup+PatternMatcher([
   # early fixup const copy
   (UPat(Ops.COPY, src=(UPat.var("s"), UPat.var("d"))),
@@ -183,9 +165,6 @@ earliest_rewrites = mop_cleanup+PatternMatcher([
   # remove DETACH/CONTIGUOUS_BACKWARD (TODO: this is copied in allocations)
   (UPat((Ops.DETACH, Ops.CONTIGUOUS_BACKWARD), name="x"), lambda x: x.src[0]),
 
-  # shard-local slices should move through elementwise ops before copy/lowering
-  (UPat(Ops.SHRINK, src=(UPat(GroupOp.Elementwise, name="ew"), UPat(), UPat()), name="shrink"), push_shrink_through_elementwise),
-
   # remove contiguous on movement ops before a copy on disk
   (UPat(GroupOp.Movement-{Ops.SHRINK, Ops.RESHAPE}, name="x").f(Ops.CONTIGUOUS).f(Ops.COPY, allow_any_len=True, name="copy"),
    lambda x,copy: copy.replace(src=(x,)+copy.src[1:]) if isinstance(x.device, str) and x.device.startswith("DISK") else None),
@@ -193,16 +172,6 @@ earliest_rewrites = mop_cleanup+PatternMatcher([
   (UPat(GroupOp.Movement-{Ops.SHRINK, Ops.RESHAPE}, name="x").f(Ops.COPY, allow_any_len=True, name="copy"),
    lambda x,copy: x.replace(src=(copy.replace(src=(x.src[0],)+copy.src[1:]),)+x.src[1:]) \
       if isinstance(x.device, str) and x.device.startswith("DISK") else None),
-
-  # push disk copy through cast
-  (UPat(Ops.COPY, src=(UPat(Ops.CAST, name='cast'), UPat(Ops.DEVICE, name='dev'))), push_disk_copy_through_cast),
-
-  # push disk copy through ADD
-  (UPat(Ops.COPY, src=(UPat(Ops.ADD, name='add'), UPat(Ops.DEVICE, name='dev'))), push_disk_copy_through_add),
-
-  # push disk copy through RESHAPE
-  (UPat(Ops.COPY, src=(UPat(Ops.RESHAPE, name='reshape'), UPat(Ops.DEVICE, name='dev'))), push_disk_copy_through_reshape),
-
 
   # ** copy rules **
 
