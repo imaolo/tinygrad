@@ -227,7 +227,7 @@ class Transformer:
 # *** helpers ***
 
 # TODO: n_kv_heads should support None
-def convert_from_huggingface(weights:dict[str, Tensor], n_layers: int, n_heads: int, n_kv_heads: int, permute_layers: bool = True, use_to:bool=True):
+def convert_from_huggingface(weights:dict[str, Tensor], n_layers: int, n_heads: int, n_kv_heads: int, permute_layers: bool = True):
   # huggingface stores Q and K permuted! it is mostly correct without this, but without it makes RoPE different, so it will diverge after 10+ toks.
   def permute(v: Tensor, n_heads: int):
     return v.reshape(n_heads, 2, v.shape[0] // n_heads // 2, v.shape[1] if len(v.shape) > 1 else 1).transpose(1, 2).reshape(*v.shape[:2])
@@ -248,7 +248,7 @@ def convert_from_huggingface(weights:dict[str, Tensor], n_layers: int, n_heads: 
   experts = collections.defaultdict(dict)
   for k, v in weights.items():
     if ".rotary_emb." in k: continue
-    if use_to: v = v.to(Device.DEFAULT)
+    v = v.to(Device.DEFAULT)
     if "model.layers" in k:
       if ("q_proj" in k or "q_norm" in k) and permute_layers: v = permute(v, n_heads)
       elif ("k_proj" in k or "k_norm" in k) and permute_layers: v = permute(v, n_kv_heads)
