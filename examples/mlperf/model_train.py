@@ -1419,17 +1419,15 @@ def train_llama3(llama2_70b_lora:bool=False):
     weights_path.mkdir(parents=True, exist_ok=True)
     snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
-    t_args = model_params|dict(max_context=SEQLEN)
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
-    lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=True, consume=True)
+    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
 
     # ensure all weights will be consumed
-    ref_model = Transformer(**t_args)
+    ref_model = Transformer(max_context=SEQLEN, **model_params)
     if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
       raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
-    load_state_dict(ref_model, **lsd_args)
+    load_state_dict(ref_model, state_dict, realize=False, strict=False, consume=True) 
     copy_weights(model, ref_model)
     del ref_model
   params = get_parameters(model)
@@ -1446,9 +1444,9 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   if llama2_70b_lora:
     # resolve model transitions on CPU to prevent dev:0 spikes
-    if getenv("RESOLVE_MODEL_CPU", 0):
+    if getenv("RESOLVE_MODEL", 0):
       for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-        param.to_("CPU").realize()
+        param.to_("CPU" if Device.DEFAULT != 'NULL' else 'NULL:99').realize()
 
     # no grad unless explicitly marked as such
     for p in params:
