@@ -20,7 +20,7 @@ def copy_weights(flat:FlatTransformer, ref:Transformer):
   flat.ffn_norm.assign(Tensor(np.stack([ref.layers[i].ffn_norm.weight.numpy() for i in range(n_layers)])))
   flat.norm.weight.assign(Tensor(ref.norm.weight.numpy()))
   flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight.numpy()))
-  flat.output.weight.assign(Tensor(ref.output.weight.numpy()))
+  flat.output.assign(Tensor(ref.output.weight.numpy()))
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
