@@ -114,7 +114,7 @@ class FlatTransformer:
     dt = FP8_DTYPE if FP8 and not QUANTIZE_LOADED_WEIGHTS and 'dtype' not in kwargs else kwargs.pop('dtype', None)
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
     if use_kaiming:
-      return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
+      return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), dtype=dt, **kwargs)
     else:
       return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
