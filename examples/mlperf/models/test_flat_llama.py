@@ -17,9 +17,9 @@ def copy_weights(flat:FlatTransformer, ref:Transformer):
   flat.w3.assign(Tensor.stack([ref.layers[i].feed_forward.w3.weight for i in range(n_layers)]))
   flat.attention_norm.assign(Tensor.stack([ref.layers[i].attention_norm.weight for i in range(n_layers)]))
   flat.ffn_norm.assign(Tensor.stack([ref.layers[i].ffn_norm.weight for i in range(n_layers)]))
-  flat.norm.weight.assign(Tensor(ref.norm.weight))
-  flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight))
-  flat.output.assign(Tensor(ref.output.weight))
+  flat.norm.weight.assign(ref.norm.weight)
+  flat.tok_embeddings.weight.assign(ref.tok_embeddings.weight)
+  flat.output.assign(ref.output.weight)
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
