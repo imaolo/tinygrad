@@ -110,14 +110,17 @@ class FlatTransformer:
       weight.replace(weight_fp8)
       setattr(self, name+'_scale', scale_fp8)
 
-  def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, **kwargs):
+  def lin_per_layer(self, in_features:int, out_features:int, zerod:bool=False, std:float=0.02, use_kaiming:bool=False, **kwargs):
     dt = FP8_DTYPE if FP8 and not QUANTIZE_LOADED_WEIGHTS and 'dtype' not in kwargs else kwargs.pop('dtype', None)
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, dtype=dt, **kwargs)
-    return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
+    if use_kaiming:
+      return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
+    else:
+      return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, dtype=dt, **kwargs)
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
     kwargs = {'dtype': LORA_DTYPE} if (LORA_DTYPE:=getenv('LORA_DTYPE', '')) else {}
-    a = self.lin_per_layer(in_dim, rank, requires_grad=True, **kwargs)
+    a = self.lin_per_layer(in_dim, rank, requires_grad=True, use_kaiming=True, **kwargs)
     b = self.lin_per_layer(rank, out_dim, zerod=True, requires_grad=True, **kwargs)
     return a, b
 
