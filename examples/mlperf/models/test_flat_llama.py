@@ -10,17 +10,16 @@ from examples.mlperf.models.flat_llama import FlatTransformer
 
 def copy_weights(flat:FlatTransformer, ref:Transformer):
   n_layers = flat.n_layers
-  Tensor.realize(*nn.state.get_state_dict(ref).values())
-  flat.wqkv.assign(Tensor(np.stack([ref.layers[i].attention.wqkv.weight.numpy() for i in range(n_layers)])))
-  flat.wo.assign(Tensor(np.stack([ref.layers[i].attention.wo.weight.numpy() for i in range(n_layers)])))
-  flat.w1.assign(Tensor(np.stack([ref.layers[i].feed_forward.w1.weight.numpy() for i in range(n_layers)])))
-  flat.w2.assign(Tensor(np.stack([ref.layers[i].feed_forward.w2.weight.numpy() for i in range(n_layers)])))
-  flat.w3.assign(Tensor(np.stack([ref.layers[i].feed_forward.w3.weight.numpy() for i in range(n_layers)])))
-  flat.attention_norm.assign(Tensor(np.stack([ref.layers[i].attention_norm.weight.numpy() for i in range(n_layers)])))
-  flat.ffn_norm.assign(Tensor(np.stack([ref.layers[i].ffn_norm.weight.numpy() for i in range(n_layers)])))
-  flat.norm.weight.assign(Tensor(ref.norm.weight.numpy()))
-  flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight.numpy()))
-  flat.output.assign(Tensor(ref.output.weight.numpy()))
+  flat.wqkv.assign(Tensor.stack([ref.layers[i].attention.wqkv.weight for i in range(n_layers)]))
+  flat.wo.assign(Tensor.stack([ref.layers[i].attention.wo.weight for i in range(n_layers)]))
+  flat.w1.assign(Tensor.stack([ref.layers[i].feed_forward.w1.weight for i in range(n_layers)]))
+  flat.w2.assign(Tensor.stack([ref.layers[i].feed_forward.w2.weight for i in range(n_layers)]))
+  flat.w3.assign(Tensor.stack([ref.layers[i].feed_forward.w3.weight for i in range(n_layers)]))
+  flat.attention_norm.assign(Tensor.stack([ref.layers[i].attention_norm.weight for i in range(n_layers)]))
+  flat.ffn_norm.assign(Tensor.stack([ref.layers[i].ffn_norm.weight for i in range(n_layers)]))
+  flat.norm.weight.assign(Tensor(ref.norm.weight))
+  flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight))
+  flat.output.assign(Tensor(ref.output.weight))
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
