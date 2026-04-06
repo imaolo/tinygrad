@@ -1282,16 +1282,17 @@ def train_bert():
         previous_step = i
 
 LLAMA2_70B_ARGS = {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "vocab_size": 32000, "hidden_dim": 28672}
-LLAMA2_70B_REPO_ID = "meta-llama/Llama-2-70b-hf"
+LLAMA2_70B_REPO_ID = "regisss/llama2-70b-fused-qkv-mlperf"
 def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8
-  from examples.mlperf.models.llama import Transformer
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, WQKV, LORA
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
+
+  if llama2_70b_lora: assert WQKV and LORA
 
   INITMLPERF = getenv("INITMLPERF")
   RUNMLPERF = getenv("RUNMLPERF")
@@ -1404,61 +1405,34 @@ def train_llama3(llama2_70b_lora:bool=False):
   if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
-  model = (FlatTransformer if (FLAT:=getenv("FLAT", 1)) else Transformer)\
-    (**model_params, max_context=SEQLEN, use_lora=llama2_70b_lora, fuse_wqkv=(FUSE_WQKV:=getenv("FUSE_WQKV", 1)))
+  model = FlatTransformer(**model_params, max_context=SEQLEN)
 
-  loaded_from_cache = False
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
     from tinygrad.nn.state import get_state_dict, safe_load, load_state_dict
     from extra.models.llama import convert_from_huggingface
-    from examples.mlperf.models.test_flat_llama import copy_weights as copy_weights_flat
-    from examples.mlperf.models.llama import copy_weights_fused
+    from examples.mlperf.models.test_flat_llama import copy_weights
+    from examples.mlperf.models.llama import Transformer
     from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
-    from tinygrad.helpers import cache_dir
 
     weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
-    cached_model_fn = Path(cache_dir)/"cached_model.tensor"
-    CACHE_MODEL = getenv("CACHE_MODEL", 0)
+    print(f"downloading weights to {weights_path}")
+    weights_path.mkdir(parents=True, exist_ok=True)
+    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
-    if CACHE_MODEL and cached_model_fn.is_file():
-      print("loading from cached_model_fn")
-      state_dict = safe_load(cached_model_fn)
-      lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
-      load_state_dict(model, **lsd_args)
-      loaded_from_cache = True
-      print("done loading")
-    else:
-      print(f"downloading weights to {weights_path}")
-      weights_path.mkdir(parents=True, exist_ok=True)
-      snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
+    t_args = model_params|dict(max_context=SEQLEN)
+    state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+    state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
+    lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=True, consume=True)
 
-      t_args = model_params|dict(max_context=SEQLEN)
-      state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-      state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads, use_to=False)
-      lsd_args = dict(state_dict=state_dict, realize=False, strict=False, use_to=False, consume=True)
+    # ensure all weights will be consumed
+    ref_model = Transformer(**t_args)
+    if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
+      raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
-      # ensure all weights will be consumed
-      ref_model = Transformer(**t_args, fuse_wqkv=False, use_lora=True)
-      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
-        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
-
-      if not FUSE_WQKV:
-        # the model is already unfused, non-flat, load directly into it
-        load_state_dict(model, **lsd_args)
-      else:
-        # create an unfused, non-flat model, and load the weights
-        load_state_dict(unfused_model:=Transformer(**t_args, fuse_wqkv=False), **lsd_args)
-
-        # copy weights into fused nonflat or flat model (flat model is only fused)
-        if not FLAT:
-          copy_weights_fused(model, unfused_model)
-        else:
-          copy_weights_fused(fused_model:=Transformer(**t_args, fuse_wqkv=True), unfused_model)
-          copy_weights_flat(model, fused_model)
-          del fused_model
-        del unfused_model
+    load_state_dict(ref_model, **lsd_args)
+    copy_weights(model, ref_model)
+    del ref_model
   params = get_parameters(model)
-  assert params and all(p.dtype in {dtypes.bfloat16, dtypes.float32} for p in params)
 
   if getenv("FAKEDATA"):
     for v in get_parameters(model):
@@ -1470,23 +1444,17 @@ def train_llama3(llama2_70b_lora:bool=False):
   device_count = max(DP, MP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
-  # resolve model transitions on CPU to prevent dev:0 spikes
-  if getenv("RESOLVE_MODEL_CPU", 0) and not loaded_from_cache:
-    for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-      param.to_("CPU").realize()
-
-    if CACHE_MODEL:
-      print("saving to ", cached_model_fn)
-      safe_save(get_state_dict(model), cached_model_fn)
-      print("done saving")
-
-  # no grad unless explicitly marked as such
   if llama2_70b_lora:
+    # resolve model transitions on CPU to prevent dev:0 spikes
+    if getenv("RESOLVE_MODEL_CPU", 0):
+      for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
+        param.to_("CPU").realize()
+
+    # no grad unless explicitly marked as such
     for p in params:
       if not p.requires_grad:
         p.requires_grad_(False)
 
-  if getenv("QUANTIZE_LOADED_WEIGHTS", 0): model.quantize_base_weights()
   model.shard(device, is_mp)
 
   print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
@@ -1503,7 +1471,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   # init grads
   for p in optim.params:
-    p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=p.device).contiguous()
+    p.grad = p.zeros_like().contiguous()
   grads = [p.grad for p in optim.params]
 
   scheduler = CosineAnnealingLRWithWarmup(optim, opt_base_learning_rate, opt_end_learning_rate, opt_learning_rate_warmup_steps, opt_learning_rate_decay_steps)
@@ -1523,8 +1491,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @Tensor.train()
   def minibatch(tokens:Tensor):
     if is_dp: tokens = tokens.to(None).shard(device, 0)
-    # to(None) is needed here for some reason, I guess it is created on NULL, or is still on disk??
-    if is_mp: tokens = tokens.to(None).shard(device)
+    if is_mp: tokens = tokens.shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
@@ -1550,21 +1517,28 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   @TinyJit
   @Tensor.train(False)
-  def eval_step(tokens:Tensor|tuple[Tensor, Tensor], ignore_index:int|None=None):
-    tokens, labels = tokens if isinstance(tokens, tuple) else (tokens, None)
+  def eval_step_llama2_70b_lora(tokens: Tensor, labels:Tensor):
     if is_dp:
       tokens = tokens.to(None).shard(device, 0)
-      if labels is not None: labels = labels.to(None).shard(device, 0)
+      labels = labels.to(None).shard(device, 0)
     if is_mp:
       tokens = tokens.to(None).shard(device)
-      if labels is not None: labels = labels.to(None).shard(device)
+      labels = labels.to(None).shard(device)
     if not is_sharding:
       tokens = tokens.to(None)
-      if labels is not None: labels = labels.to(None)
+      labels = labels.to(None)
     logits:Tensor = model(tokens[:, :-1])
-    labels = tokens if labels is None else labels
-    spc_kwargs = dict() if ignore_index is None else dict(ignore_index=ignore_index)
-    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(labels[:, 1:], **spc_kwargs)
+    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(labels[:, 1:], ignore_index=-100)
+    return loss.flatten().float().to("CPU")
+
+  @TinyJit
+  @Tensor.train(False)
+  def eval_step(tokens:Tensor):
+    if is_dp: tokens = tokens.to(None).shard(device, 0)
+    if is_mp: tokens = tokens.shard(device)
+    if not is_sharding: tokens = tokens.to(None)
+    logits:Tensor = model(tokens[:, :-1])
+    loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
     return loss.flatten().float().to("CPU")
 
   # ** data iters **
@@ -1603,13 +1577,12 @@ def train_llama3(llama2_70b_lora:bool=False):
       from examples.mlperf.dataloader import iterate_llama3_dataset
       return iterate_llama3_dataset(eval_dataset, EVAL_BS)
 
-  DEBUG_LORA = getenv("DEBUG_LORA", 0)
   num_params = sum(p.numel() for p in params) - model_params["vocab_size"]*model_params["dim"]
   train_iter = get_train_iter()
   i, sequences_seen = resume_ckpt, 0
   step_times = []
 
-  if getenv("BASE_EVAL") and llama2_70b_lora and eval_dataset is not None and EVAL_BS > 0:
+  if getenv("BASE_EVAL", 0) and llama2_70b_lora and eval_dataset is not None and EVAL_BS > 0:
     print("=== BASELINE EVAL (before training) ===")
     baseline_losses = []
     baseline_iter = get_eval_iter()
@@ -1642,16 +1615,12 @@ def train_llama3(llama2_70b_lora:bool=False):
           break
         mst = time.perf_counter()
         data_time += mst - ist
-        if minibatch.captured is not None and getenv("TARGETED_PROFILE", 0):
-          from tinygrad.helpers import PROFILE
-          PROFILE.value = -1
         losses.append(minibatch(tokens).item())
         dev_time += time.perf_counter() - mst
       if stopped: break
 
       gt = time.perf_counter()
       ret = optim_step()
-      if DEBUG_LORA: print("debug lora: ", model.lora_b[0].abs().max().numpy())
       lr, grad_norm = ret[0].item(), ret[1].item()
       et = time.perf_counter()
 
@@ -1722,7 +1691,10 @@ def train_llama3(llama2_70b_lora:bool=False):
       tqdm.write(f"evaluating {EVAL_SAMPLES//EVAL_BS} batches of {EVAL_BS} sequences")
 
       for j,tokens in tqdm(enumerate(eval_iter), total=EVAL_SAMPLES//EVAL_BS):
-        eval_losses += eval_step(tokens, -100 if llama2_70b_lora else None).tolist()
+        if not llama2_70b_lora:
+          eval_losses += eval_step(tokens).tolist()
+        else:
+          eval_losses += eval_step_llama2_70b_lora(*tokens).tolist()
 
         if BENCHMARK and (j+1) == min(BENCHMARK, EVAL_SAMPLES//EVAL_BS):
           if MLLOGGER and INITMLPERF:
