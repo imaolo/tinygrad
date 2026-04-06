@@ -1287,7 +1287,7 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8
   from examples.mlperf.models.llama import Transformer
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
@@ -1503,7 +1503,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   # init grads
   for p in optim.params:
-    p.grad = Tensor.zeros_like(p).contiguous()
+    p.grad = Tensor.zeros(p.shape, dtype=p.dtype, device=p.device).contiguous()
   grads = [p.grad for p in optim.params]
 
   scheduler = CosineAnnealingLRWithWarmup(optim, opt_base_learning_rate, opt_end_learning_rate, opt_learning_rate_warmup_steps, opt_learning_rate_decay_steps)
@@ -1516,6 +1516,8 @@ def train_llama3(llama2_70b_lora:bool=False):
     fn = f"./ckpts/llama3_{resume_ckpt}_optim.safe"
     print(f"loading optim checkpoint from {fn}")
     load_state_dict(scheduler, safe_load(fn), realize=False)
+
+  fp8_amax = [t for ts in model._fp8_amax.values() for t in ts] if FP8 else []
 
   @TinyJit
   @Tensor.train()
@@ -1531,7 +1533,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       apply_grad(g, new_g.uop)
 
     loss_cpu = loss.flatten().float().to("CPU")
-    return loss_cpu.realize(*grads)
+    return loss_cpu.realize(*grads, *fp8_amax)
 
   @TinyJit
   def optim_step():

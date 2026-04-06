@@ -2393,18 +2393,6 @@ class Tensor(OpMixin):
     """
     return self._apply_uop(UOp.contiguous_backward)
 
-  def logsigmoid(self) -> Tensor:
-    """
-    Applies the LogSigmoid function element-wise.
-
-    - See: https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.logsigmoid.html
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([-3., -2., -1., 0., 1., 2., 3.]).logsigmoid().numpy())
-    ```
-    """
-    return -(-self).softplus()
-
   # ***** math functions *****
 
   def lerp(self, end:Tensor, weight:Tensor|float) -> Tensor:
@@ -2419,42 +2407,6 @@ class Tensor(OpMixin):
       w_i = (weight * (1<<(W_PREC:=7)) + 0.5).cast(dtypes.int16)
       return (self+(((end - self).cast(dtypes.int8) * w_i + (1<<W_PREC-1)).cast(dtypes.uint16) >> W_PREC)).cast(dtypes.uint8)
     return self + (end - self) * weight
-
-  # ***** activation functions *****
-
-  def selu(self, alpha=1.67326, gamma=1.0507) -> Tensor:
-    """
-    Applies the Scaled Exponential Linear Unit (SELU) function element-wise.
-
-    - Paper: https://arxiv.org/abs/1706.02515v5
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([-3., -2., -1., 0., 1., 2., 3.]).selu().numpy())
-    ```
-    """
-    return gamma * (self >= 0).detach().where(self, alpha * (self.exp() - 1))
-
-  def mish(self) -> Tensor:
-    """
-    Applies the Mish function element-wise.
-
-    - Paper: https://arxiv.org/abs/1908.08681v3
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([-3., -2., -1., 0., 1., 2., 3.]).mish().numpy())
-    ```
-    """
-    return self * self.softplus().tanh()
-
-  def softplus(self, beta=1.0) -> Tensor:
-    """
-    Applies the Softplus function element-wise.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([-3., -2., -1., 0., 1., 2., 3.]).softplus().numpy())
-    ```
-    """
-    return (1/beta) * (self*beta).logaddexp(0.0)
 
   # ***** broadcasted elementwise ops *****
 
@@ -2510,30 +2462,6 @@ class Tensor(OpMixin):
     """
     a, b = self._broadcasted(x, reverse)
     return a - a.div(b, rounding_mode="floor") * b
-
-  def lshift(self, x:Tensor|int, reverse=False) -> Tensor:
-    """
-    Computes left arithmetic shift of `self` by `x` bits. `self` must have unsigned dtype.
-    Equivalent to `self << x`.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([1, 3, 31], dtype=dtypes.uint8).lshift(2).numpy())
-    ```
-    """
-    assert dtypes.is_unsigned(self.dtype) and isinstance(x, int) and x >= 0 and not reverse, f"not supported {self.dtype=} {x=}"
-    return self.mul(2 ** x, reverse)
-
-  def rshift(self, x:Tensor|int, reverse=False) -> Tensor:
-    """
-    Computes right arithmetic shift of `self` by `x` bits. `self` must have unsigned dtype.
-    Equivalent to `self >> x`.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(Tensor([4, 13, 125], dtype=dtypes.uint8).rshift(2).numpy())
-    ```
-    """
-    assert dtypes.is_unsigned(self.dtype) and isinstance(x, int) and x >= 0 and not reverse, f"not supported {self.dtype=} {x=}"
-    return self.idiv(2 ** x, reverse)
 
   def where(self:Tensor, x:Tensor|ConstType|sint, y:Tensor|ConstType|sint) -> Tensor:
     """
