@@ -8,18 +8,19 @@ from tinygrad.device import is_dtype_supported, Device
 from examples.mlperf.models.llama import Transformer
 from examples.mlperf.models.flat_llama import FlatTransformer
 
-def copy_weights(flat: FlatTransformer, ref: Transformer):
+def copy_weights(flat:FlatTransformer, ref:Transformer):
   n_layers = flat.n_layers
-  flat.wqkv.replace(Tensor.stack(*[ref.layers[i].attention.wqkv.weight.cast(flat.wqkv.dtype) for i in range(n_layers)]))
-  flat.wo.replace(Tensor.stack(*[ref.layers[i].attention.wo.weight.cast(flat.wo.dtype) for i in range(n_layers)]))
-  flat.w1.replace(Tensor.stack(*[ref.layers[i].feed_forward.w1.weight.cast(flat.w1.dtype) for i in range(n_layers)]))
-  flat.w2.replace(Tensor.stack(*[ref.layers[i].feed_forward.w2.weight.cast(flat.w2.dtype) for i in range(n_layers)]))
-  flat.w3.replace(Tensor.stack(*[ref.layers[i].feed_forward.w3.weight.cast(flat.w3.dtype) for i in range(n_layers)]))
-  flat.attention_norm.replace(Tensor.stack(*[ref.layers[i].attention_norm.weight.cast(flat.attention_norm.dtype) for i in range(n_layers)]))
-  flat.ffn_norm.replace(Tensor.stack(*[ref.layers[i].ffn_norm.weight.cast(flat.ffn_norm.dtype) for i in range(n_layers)]))
-  flat.norm.weight.replace(ref.norm.weight.cast(flat.norm.weight.dtype))
-  flat.tok_embeddings.weight.replace(ref.tok_embeddings.weight.cast(flat.tok_embeddings.weight.dtype))
-  flat.output.replace(ref.output.weight.unsqueeze(0).cast(flat.output.dtype))
+  Tensor.realize(*nn.state.get_state_dict(ref).values())
+  flat.wqkv.assign(Tensor(np.stack([ref.layers[i].attention.wqkv.weight.numpy() for i in range(n_layers)])))
+  flat.wo.assign(Tensor(np.stack([ref.layers[i].attention.wo.weight.numpy() for i in range(n_layers)])))
+  flat.w1.assign(Tensor(np.stack([ref.layers[i].feed_forward.w1.weight.numpy() for i in range(n_layers)])))
+  flat.w2.assign(Tensor(np.stack([ref.layers[i].feed_forward.w2.weight.numpy() for i in range(n_layers)])))
+  flat.w3.assign(Tensor(np.stack([ref.layers[i].feed_forward.w3.weight.numpy() for i in range(n_layers)])))
+  flat.attention_norm.assign(Tensor(np.stack([ref.layers[i].attention_norm.weight.numpy() for i in range(n_layers)])))
+  flat.ffn_norm.assign(Tensor(np.stack([ref.layers[i].ffn_norm.weight.numpy() for i in range(n_layers)])))
+  flat.norm.weight.assign(Tensor(ref.norm.weight.numpy()))
+  flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight.numpy()))
+  flat.output.weight.assign(Tensor(ref.output.weight.numpy()))
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
