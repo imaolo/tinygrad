@@ -353,9 +353,9 @@ def is_dtype_supported(dtype:DType, target:Target|None=None) -> bool:
       case "METAL" | "QCOM": return False
   return True
 
-@atexit.register
-def finalize_profile():
-  if PROFILE:
+if PROFILE:
+  @atexit.register
+  def finalize_profile():
     devs = [Device[d] for d in Device._opened_devices]
     for dev in devs: dev.synchronize()
     for dev in devs: dev._at_profile_finalize()
