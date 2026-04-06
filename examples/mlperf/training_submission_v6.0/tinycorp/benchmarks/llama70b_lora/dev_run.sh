@@ -42,6 +42,6 @@ export MAX_GRAD_NORM=${MAX_GRAD_NORM:-0.3}
 
 export EVAL_TARGET="${EVAL_TARGET:-0.925}"
 export LOAD_MODEL="${LOAD_MODEL:-0}"
-export RESOLVE_MODEL_CPU="${RESOLVE_MODEL_CPU:-0}"
+export RESOLVE_MODEL="${RESOLVE_MODEL:-0}"
 
 .venv/bin/python -u examples/mlperf/model_train.py
