@@ -1607,6 +1607,18 @@ def train_llama3(llama2_70b_lora:bool=False):
   i, sequences_seen = resume_ckpt, 0
   step_times = []
 
+  if getenv("BASE_EVAL") and llama2_70b_lora and eval_dataset is not None and EVAL_BS > 0:
+    print("=== BASELINE EVAL (before training) ===")
+    baseline_losses = []
+    baseline_iter = get_eval_iter()
+    for j, tokens in tqdm(enumerate(baseline_iter), total=EVAL_SAMPLES//EVAL_BS):
+      baseline_losses += eval_step(tokens, -100).tolist()
+    baseline_lp = sum(baseline_losses) / len(baseline_losses)
+    print(f"=== BASELINE eval log perplexity: {baseline_lp:.4f} ===")
+    if WANDB:
+      import wandb
+      wandb.log({"eval/baseline_log_perplexity": baseline_lp})
+
   if MLLOGGER and RUNMLPERF:
     MLLOGGER.start(key=mllog_constants.EPOCH_START, metadata={mllog_constants.SAMPLES_COUNT: sequences_seen})
     MLLOGGER.start(key=mllog_constants.BLOCK_START, metadata={mllog_constants.SAMPLES_COUNT: sequences_seen})
