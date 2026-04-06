@@ -9,6 +9,8 @@ export OFFLOAD_OPTIM=${OFFLOAD_OPTIM:-0}
 export MIXED_PRECISION=${MIXED_PRECISION:-0}
 export FP8=${FP8:-0}
 export MASTER_WEIGHTS=${MASTER_WEIGHTS:-1}
+export LORA=1
+export WQKV=1
 
 export FAKEDATA="${FAKEDATA:-0}"
 export DEV="${DEV:-NULL}"
