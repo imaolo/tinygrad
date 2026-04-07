@@ -1407,30 +1407,6 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   model = FlatTransformer(**model_params, max_context=SEQLEN)
 
-  if llama2_70b_lora and getenv("LOAD_MODEL", 1):
-    from tinygrad.nn.state import get_state_dict, safe_load, load_state_dict
-    from tinygrad.helpers import Context
-    from extra.models.llama import convert_from_huggingface
-    from examples.mlperf.models.test_flat_llama import copy_weights
-    from examples.mlperf.models.llama import Transformer
-    from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
-
-    weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
-    print(f"downloading weights to {weights_path}")
-    weights_path.mkdir(parents=True, exist_ok=True)
-    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
-
-    with Context(DEV=(dev:='CPU' if Device.DEFAULT != 'NULL' else 'NULL:999')):
-      state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-
-      # ensure all weights will be consumed
-      if unused := (state_dict.keys() - get_state_dict(model).keys()):
-        raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
-
-      load_state_dict(model, state_dict, realize=False, strict=False)
-      for param in get_parameters(model): param.to_(dev)
-      copy_weights(model, ref_model)
-      del ref_model, state_dict
   params = get_parameters(model)
 
   if getenv("FAKEDATA"):
