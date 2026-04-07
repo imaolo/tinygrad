@@ -1429,6 +1429,8 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   # load the model
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
+    from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
+
     weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
     print(f"downloading weights to {weights_path}")
     weights_path.mkdir(parents=True, exist_ok=True)
