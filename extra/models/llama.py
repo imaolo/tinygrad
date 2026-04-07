@@ -253,6 +253,16 @@ def convert_from_huggingface(weights:dict[str, Tensor], n_layers: int, n_heads: 
     if "model.layers" in k:
       if ("q_proj" in k or "q_norm" in k) and permute_layers: v = permute(v, n_heads)
       elif ("k_proj" in k or "k_norm" in k) and permute_layers: v = permute(v, n_kv_heads)
+      elif "qkv_proj" in k and permute_layers:
+        head_dim = v.shape[0] // (n_heads + 2 * n_kv_heads)
+        in_dim = v.shape[1]
+        n_rep = n_heads // n_kv_heads
+        q, kw, vw = v[:n_heads * head_dim], v[n_heads * head_dim:(n_heads + n_kv_heads) * head_dim], v[(n_heads + n_kv_heads) * head_dim:]
+        q, kw = permute(q, n_heads), permute(kw, n_kv_heads)
+        q = q.reshape(n_kv_heads, n_rep, head_dim, in_dim)
+        kw = kw.reshape(n_kv_heads, 1, head_dim, in_dim)
+        vw = vw.reshape(n_kv_heads, 1, head_dim, in_dim)
+        v = q.cat(kw, vw, dim=1).reshape(-1, in_dim)
     if '.mlp.experts.' in k:
       # support MoE models
       _, _, layer, _, _, expert, name, _ = k.split('.')
