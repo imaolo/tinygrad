@@ -82,7 +82,6 @@ def main() -> None:
     allow_patterns=[p.name for p in weight_files],
     commit_message=f"Uploaded {len(weight_files)} flat weights",
   )
-  print(f"uploaded flat model weights to {HF_REPO_ID}")
 
   # done
   print(f"saved {WEIGHTS_PATH}")
