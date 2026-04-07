@@ -5,8 +5,8 @@ os.environ["DEV"] = "CPU"
 os.environ["WQKV"] = "1"
 os.environ["LORA"] = "0"
 
+from tqdm import tqdm
 from huggingface_hub import HfApi
-from tinygrad.helpers import Context
 from tinygrad.nn.state import get_state_dict, load_state_dict, safe_load, safe_save
 from extra.models.llama import convert_from_huggingface
 from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
@@ -37,28 +37,33 @@ def main() -> None:
   if unused := sorted(ref_state_dict.keys() - get_state_dict(ref_model).keys()):
     raise RuntimeError(f"unused weights in state_dict: {unused}")
 
-  with Context(DEV='CPU'):
-    # load reference weights into reference model
-    load_state_dict(ref_model, ref_state_dict, realize=False, strict=False, consume=True)
+  # load reference weights into reference model
+  load_state_dict(ref_model, ref_state_dict, realize=False, strict=False, consume=True)
 
-    # create flat model and copy reference weights into it
-    flat_model = FlatTransformer(**model_args)
-    copy_weights(flat_model, ref_model)
-    del ref_model
+  # create flat model and copy reference weights into it
+  flat_model = FlatTransformer(**model_args)
+  print("copying reference model to flat mode;")
+  copy_weights(flat_model, ref_model)
+  print("copied reference model to flat mode;")
+  del ref_model
 
   # save flat model weights
   flat_state_dict = get_state_dict(flat_model)
-  WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-  safe_save(flat_state_dict, WEIGHTS_PATH.as_posix())
+  WEIGHTS_PATH.mkdir(parents=True, exist_ok=True)
+  weight_files = []
+  for i, (name, tensor) in enumerate(flat_state_dict.items()):
+    file_path = WEIGHTS_PATH / f'model-{i+1:02d}-of-{len(flat_state_dict):02d}.safetensors'
+    safe_save({name: tensor}, file_path)
+    weight_files.append(file_path)
 
   # upload flat model weights
   api = HfApi()
   api.create_repo(repo_id=HF_REPO_ID, exist_ok=True)
-  commit_info = api.upload_file(
-    path_or_fileobj=WEIGHTS_PATH,
-    path_in_repo=WEIGHTS_PATH.name,
+  commit_info = api.upload_folder(
+    folder_path=WEIGHTS_PATH,
     repo_id=HF_REPO_ID,
-    commit_message=f"Upload {WEIGHTS_PATH.name}",
+    allow_patterns=[p.name for p in weight_files],
+    commit_message=f"Upload {len(weight_files)} flat weight shards",
   )
 
   # done
