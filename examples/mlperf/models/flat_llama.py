@@ -25,6 +25,9 @@ FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
 
+def allgather(x: Tensor|None) -> Tensor|None:
+  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad) if x is not None else None 
+
 def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   if amax_state is not None:
     scale = FP8_MAX / (amax_state + 1e-8)
@@ -63,6 +66,7 @@ class FlatTransformer:
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
+    self.fsdp = False
 
     if LORA: assert WQKV
 
@@ -168,6 +172,9 @@ class FlatTransformer:
                 amax_xv=None, amax_wv=None, amax_xo=None, amax_wo=None,
                 amax_x1=None, amax_w1=None, amax_x2=None, amax_w2=None, amax_x3=None, amax_w3=None,
                 lora_a: Tensor|None=None, lora_b:Tensor|None=None, lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
+    if self.fsdp:
+      wqkv, wq, wk, wv = allgather(wqkv), allgather(wq), allgather(wk), allgather(wv)
+      w1, w2, w3, wo = allgather(w1), allgather(w2), allgather(w3), allgather(wo)
     h = x + self.attention(x, freqs_cis, attention_norm, wo, wqkv=wqkv, wq=wq, wk=wk, wv=wv,
                            amax_xqkv=amax_xqkv, amax_wqkv=amax_wqkv, amax_xq=amax_xq, amax_wq=amax_wq,
                            amax_xk=amax_xk, amax_wk=amax_wk, amax_xv=amax_xv, amax_wv=amax_wv,
@@ -177,11 +184,12 @@ class FlatTransformer:
                                  amax_x1=amax_x1, amax_w1=amax_w1, amax_x2=amax_x2, amax_w2=amax_w2,
                                  amax_x3=amax_x3, amax_w3=amax_w3)
 
-  def shard(self, device:tuple[str, ...], mp:bool=False):
+  def shard(self, device:tuple[str, ...], mp:bool=False, fsdp:bool=False):
     from tinygrad.nn.state import get_parameters
-    if not mp:
+    assert not (mp and fsdp), f"only one of {mp=} and {fsdp=} allowed"
+    if not (mp or fsdp):
       for v in get_parameters(self): v.shard_(device, axis=None)
-    else:
+    elif mp:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       if WQKV:
         self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
@@ -204,7 +212,26 @@ class FlatTransformer:
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
       self.output.shard_(device, axis=1).realize()
       self.freqs_cis.shard_(device, axis=None).realize()
+    else:
+      # shard only the big ones
+      if WQKV:
+        self.wqkv.shard_(device, axis=1).realize()
+      else:
+        self.wq.shard_(device, axis=1).realize()
+        self.wk.shard_(device, axis=1).realize()
+        self.wv.shard_(device, axis=1).realize()
 
+      self.wo.shard_(device, axis=1).realize()
+      self.w1.shard_(device, axis=1).realize()
+      self.w2.shard_(device, axis=1).realize()
+      self.w3.shard_(device, axis=1).realize()
+
+      for v in get_parameters(self):
+        if not isinstance(v.device, tuple):
+          v.shard_(device, axis=None).realize()
+
+      self.fsdp = True
+      
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
