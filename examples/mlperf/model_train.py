@@ -1420,7 +1420,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     weights_path.mkdir(parents=True, exist_ok=True)
     snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
-    with Context(DEV='CPU' if Device.DEFAULT != 'NULL' else 'NULL:999'):
+    with Context(DEV=(dev:='CPU' if Device.DEFAULT != 'NULL' else 'NULL:999')):
       state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
       state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
 
@@ -1430,7 +1430,7 @@ def train_llama3(llama2_70b_lora:bool=False):
         raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
       load_state_dict(ref_model, state_dict, realize=True, strict=False)
-      for param in get_parameters(model): param.to_(Device.default)
+      for param in get_parameters(model): param.to_(dev)
       copy_weights(model, ref_model)
       del ref_model, state_dict
   params = get_parameters(model)
