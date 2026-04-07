@@ -1429,7 +1429,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
         raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
-      load_state_dict(ref_model, state_dict, realize=True)
+      load_state_dict(ref_model, state_dict, realize=True, strict=False)
       copy_weights(model, ref_model)
       del ref_model, state_dict
   params = get_parameters(model)
