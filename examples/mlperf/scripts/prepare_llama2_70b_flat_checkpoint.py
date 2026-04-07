@@ -8,12 +8,12 @@ os.environ["ZEROS"] = "1"
 
 from tqdm import tqdm
 from huggingface_hub import HfApi
+from tinygrad import Tensor
 from tinygrad.nn.state import get_state_dict, load_state_dict, safe_load, safe_save
 from extra.models.llama import convert_from_huggingface
 from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
 from examples.mlperf.model_train import LLAMA2_70B_ARGS
 from examples.mlperf.models.flat_llama import FlatTransformer
-from examples.mlperf.models.test_flat_llama import copy_weights
 from examples.mlperf.models.llama import Transformer
 
 HF_REPO_ID = "imaolo/llama2-70b-fused-qkv-flat-mlperf"
@@ -21,6 +21,20 @@ HF_REF_REPO_ID = "regisss/llama2-70b-fused-qkv-mlperf"
 
 REF_WEIGHTS_PATH = DOWNLOADS_DIR/HF_REF_REPO_ID
 WEIGHTS_PATH = DOWNLOADS_DIR/HF_REPO_ID
+
+def copy_weights(flat:FlatTransformer, ref:Transformer):
+  n_layers = flat.n_layers
+  flat.wqkv.assign(Tensor.stack([ref.layers[i].attention.wqkv.weight for i in range(n_layers)]))
+  flat.wo.assign(Tensor.stack([ref.layers[i].attention.wo.weight for i in range(n_layers)]))
+  flat.w1.assign(Tensor.stack([ref.layers[i].feed_forward.w1.weight for i in range(n_layers)]))
+  flat.w2.assign(Tensor.stack([ref.layers[i].feed_forward.w2.weight for i in range(n_layers)]))
+  flat.w3.assign(Tensor.stack([ref.layers[i].feed_forward.w3.weight for i in range(n_layers)]))
+  flat.attention_norm.assign(Tensor.stack([ref.layers[i].attention_norm.weight for i in range(n_layers)]))
+  flat.ffn_norm.assign(Tensor.stack([ref.layers[i].ffn_norm.weight for i in range(n_layers)]))
+  flat.norm.weight.assign(ref.norm.weight)
+  flat.tok_embeddings.weight.assign(ref.tok_embeddings.weight)
+  flat.output.assign(ref.output.weight)
+
 
 def main() -> None:
   ## download reference weights
