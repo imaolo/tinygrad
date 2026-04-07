@@ -45,9 +45,9 @@ def main() -> None:
 
   # create flat model and copy reference weights into it
   flat_model = FlatTransformer(**model_args)
-  print("copying reference model to flat mode")
+  print("copying reference model to flat model")
   copy_weights(flat_model, ref_model)
-  print("copied reference model to flat mode")
+  print("copied reference model to flat model")
   del ref_model
 
   # save flat model weights
