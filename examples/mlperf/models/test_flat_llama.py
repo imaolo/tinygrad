@@ -10,16 +10,16 @@ from examples.mlperf.models.flat_llama import FlatTransformer
 
 def copy_weights(flat:FlatTransformer, ref:Transformer):
   n_layers = flat.n_layers
-  flat.wqkv.assign(Tensor.stack([ref.layers[i].attention.wqkv.weight for i in range(n_layers)]))
-  flat.wo.assign(Tensor.stack([ref.layers[i].attention.wo.weight for i in range(n_layers)]))
-  flat.w1.assign(Tensor.stack([ref.layers[i].feed_forward.w1.weight for i in range(n_layers)]))
-  flat.w2.assign(Tensor.stack([ref.layers[i].feed_forward.w2.weight for i in range(n_layers)]))
-  flat.w3.assign(Tensor.stack([ref.layers[i].feed_forward.w3.weight for i in range(n_layers)]))
-  flat.attention_norm.assign(Tensor.stack([ref.layers[i].attention_norm.weight for i in range(n_layers)]))
-  flat.ffn_norm.assign(Tensor.stack([ref.layers[i].ffn_norm.weight for i in range(n_layers)]))
-  flat.norm.weight.assign(ref.norm.weight)
-  flat.tok_embeddings.weight.assign(ref.tok_embeddings.weight)
-  flat.output.assign(ref.output.weight)
+  flat.wqkv.assign(Tensor.stack([ref.layers[i].attention.wqkv.weight.realize() for i in range(n_layers)]).realize())
+  flat.wo.assign(Tensor.stack([ref.layers[i].attention.wo.weight.realize() for i in range(n_layers)]).realize())
+  flat.w1.assign(Tensor.stack([ref.layers[i].feed_forward.w1.weight.realize() for i in range(n_layers)]).realize())
+  flat.w2.assign(Tensor.stack([ref.layers[i].feed_forward.w2.weight.realize() for i in range(n_layers)]).realize())
+  flat.w3.assign(Tensor.stack([ref.layers[i].feed_forward.w3.weight.realize() for i in range(n_layers)]).realize())
+  flat.attention_norm.assign(Tensor.stack([ref.layers[i].attention_norm.weight.realize() for i in range(n_layers)]).realize())
+  flat.ffn_norm.assign(Tensor.stack([ref.layers[i].ffn_norm.weight.realize() for i in range(n_layers)]).realize())
+  flat.norm.weight.assign(ref.norm.weight.realize())
+  flat.tok_embeddings.weight.assign(ref.tok_embeddings.weight.realize())
+  flat.output.assign(ref.output.weight.realize())
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
