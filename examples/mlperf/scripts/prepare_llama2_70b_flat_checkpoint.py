@@ -30,8 +30,9 @@ def main() -> None:
   print("downloaded reference weights")
 
   # load reference weights
-  assert len(REF_WEIGHTS_PATH.glob("*.safetensors")) == 29
-  ref_state_dict = {k:v for weight_file in REF_WEIGHTS_PATH.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+  ref_weight_paths = list(REF_WEIGHTS_PATH.glob("*.safetensors"))
+  assert len(ref_weight_paths) == 29
+  ref_state_dict = {k:v for weight_file in ref_weight_paths for k,v in safe_load(weight_file).items()}
   ref_state_dict = convert_from_huggingface(ref_state_dict, LLAMA2_70B_ARGS["n_layers"], LLAMA2_70B_ARGS["n_heads"], LLAMA2_70B_ARGS["n_kv_heads"])
 
   # create reference model
