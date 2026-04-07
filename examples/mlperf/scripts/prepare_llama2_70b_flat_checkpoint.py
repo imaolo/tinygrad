@@ -50,11 +50,10 @@ def main() -> None:
   # save flat model weights
   flat_state_dict = get_state_dict(flat_model)
   WEIGHTS_PATH.mkdir(parents=True, exist_ok=True)
-  weight_files = []
-  for i, (name, tensor) in enumerate(flat_state_dict.items()):
-    file_path = WEIGHTS_PATH / f'model-{i+1:02d}-of-{len(flat_state_dict):02d}.safetensors'
-    safe_save({name: tensor}, file_path)
-    weight_files.append(file_path)
+  weight_files = [WEIGHTS_PATH / f"{name}.safetensors" for name in flat_state_dict.keys()]
+  for file_name, (name, tensor) in zip(weight_files, flat_state_dict.items()):
+    if file_name.is_file(): continue
+    safe_save({name: tensor}, file_name)
 
   # upload flat model weights
   api = HfApi()
