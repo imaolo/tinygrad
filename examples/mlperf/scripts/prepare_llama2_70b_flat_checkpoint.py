@@ -73,6 +73,7 @@ def main() -> None:
     safe_save({name: tensor}, file_name)
 
   # upload flat model weights
+  print(f"uploading flat model weights to {HF_REPO_ID}")
   api = HfApi()
   api.create_repo(repo_id=HF_REPO_ID, exist_ok=True)
   commit_info = api.upload_folder(
@@ -81,6 +82,7 @@ def main() -> None:
     allow_patterns=[p.name for p in weight_files],
     commit_message=f"Uploaded {len(weight_files)} flat weights",
   )
+  print(f"uploaded flat model weights to {HF_REPO_ID}")
 
   # done
   print(f"saved {WEIGHTS_PATH}")
