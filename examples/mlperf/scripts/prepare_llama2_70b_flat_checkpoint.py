@@ -51,7 +51,7 @@ def main() -> None:
   flat_state_dict = get_state_dict(flat_model)
   WEIGHTS_PATH.mkdir(parents=True, exist_ok=True)
   weight_files = [WEIGHTS_PATH / f"{name}.safetensors" for name in flat_state_dict.keys()]
-  for file_name, (name, tensor) in zip(weight_files, flat_state_dict.items()):
+  for file_name, (name, tensor) in tqdm(zip(weight_files, flat_state_dict.items()), total=len(weight_files), desc="saving flat weight shards"):
     if file_name.is_file(): continue
     safe_save({name: tensor}, file_name)
 
@@ -62,7 +62,7 @@ def main() -> None:
     folder_path=WEIGHTS_PATH,
     repo_id=HF_REPO_ID,
     allow_patterns=[p.name for p in weight_files],
-    commit_message=f"Upload {len(weight_files)} flat weight shards",
+    commit_message=f"Uploaded {len(weight_files)} flat weights",
   )
 
   # done
