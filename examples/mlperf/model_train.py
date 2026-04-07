@@ -1282,7 +1282,7 @@ def train_bert():
         previous_step = i
 
 LLAMA2_70B_ARGS = {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "vocab_size": 32000, "hidden_dim": 28672}
-LLAMA2_70B_REPO_ID = "regisss/llama2-70b-fused-qkv-mlperf"
+LLAMA2_70B_REPO_ID = "imaolo/llama2-70b-fused-qkv-flat-mlperf"
 def train_llama2_70b_lora():
   train_llama3(True)
 
@@ -1422,14 +1422,12 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     with Context(DEV=(dev:='CPU' if Device.DEFAULT != 'NULL' else 'NULL:999')):
       state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
-      state_dict = convert_from_huggingface(state_dict, model.n_layers, model.n_heads, model.n_kv_heads)
 
       # ensure all weights will be consumed
-      ref_model = Transformer(max_context=SEQLEN, **model_params)
-      if unused := (state_dict.keys() - get_state_dict(ref_model).keys()):
+      if unused := (state_dict.keys() - get_state_dict(model).keys()):
         raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
-      load_state_dict(ref_model, state_dict, realize=True, strict=False)
+      load_state_dict(model, state_dict, realize=False, strict=False)
       for param in get_parameters(model): param.to_(dev)
       copy_weights(model, ref_model)
       del ref_model, state_dict
@@ -1441,26 +1439,34 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   is_dp = (DP := getenv("DP", 1)) > 1
   is_mp = (MP := getenv("MP", 1)) > 1
-  is_sharding = is_dp or is_mp
-  device_count = max(DP, MP)
+  is_fsdp = (FSDP := getenv("FSDP", 1)) > 1
+  is_sharding = is_dp or is_mp or is_fsdp
+  device_count = max(DP, MP, FSDP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
   if llama2_70b_lora:
-    # resolve model transitions on CPU to prevent dev:0 spikes
-    if getenv("RESOLVE_MODEL", 0):
-      for param in iter(tqdm(params, total=len(get_parameters(model)), desc=f"params to cpu")):
-        param.to_("CPU" if Device.DEFAULT != 'NULL' else 'NULL:99').realize()
-
-    # no grad unless explicitly marked as such
     for p in params:
       if not p.requires_grad:
         p.requires_grad_(False)
 
-  model.shard(device, is_mp)
+  model.shard(device, is_mp, is_fsdp)
+
+  # load the model
+  if llama2_70b_lora and getenv("LOAD_MODEL", 1):
+    weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
+    print(f"downloading weights to {weights_path}")
+    weights_path.mkdir(parents=True, exist_ok=True)
+    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
+
+    state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+
+    assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
+
+    load_state_dict(model, state_dict, strict=False)
 
   print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
-  if is_dp: vocab_mask.shard_(device, axis=None).realize()
+  if is_dp or is_fsdp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
 
   is_offload_optim = bool(getenv("OFFLOAD_OPTIM"))
@@ -1491,7 +1497,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train()
   def minibatch(tokens:Tensor):
-    if is_dp: tokens = tokens.to(None).shard(device, 0)
+    if is_dp or is_fsdp: tokens = tokens.to(None).shard(device, 0)
     if is_mp: tokens = tokens.shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
@@ -1519,7 +1525,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train(False)
   def eval_step_llama2_70b_lora(tokens: Tensor, labels:Tensor):
-    if is_dp:
+    if is_dp or is_fsdp:
       tokens = tokens.to(None).shard(device, 0)
       labels = labels.to(None).shard(device, 0)
     if is_mp:
@@ -1535,7 +1541,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train(False)
   def eval_step(tokens:Tensor):
-    if is_dp: tokens = tokens.to(None).shard(device, 0)
+    if is_dp or is_fsdp: tokens = tokens.to(None).shard(device, 0)
     if is_mp: tokens = tokens.shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
