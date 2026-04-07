@@ -1430,6 +1430,7 @@ def train_llama3(llama2_70b_lora:bool=False):
         raise RuntimeError(f"unused weights in state_dict: {sorted(unused)}")
 
       load_state_dict(ref_model, state_dict, realize=True, strict=False)
+      for param in get_parameters(model): param.to_(Device.default)
       copy_weights(model, ref_model)
       del ref_model, state_dict
   params = get_parameters(model)
