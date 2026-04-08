@@ -2,7 +2,6 @@
 
 export DEV="${DEV:-CUDA}"
 export WANDB=${WANDB:-1}
-export RESOLVE_MODEL=${RESOLVE_MODEL:-1}
 export CPU_OPT=1
 export LOAD_MODEL=${LOAD_MODEL:-1}
 export EVAL_BS=${EVAL_BS:-1}
