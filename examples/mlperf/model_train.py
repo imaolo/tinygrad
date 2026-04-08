@@ -1477,7 +1477,8 @@ def train_llama3(llama2_70b_lora:bool=False):
   @Tensor.train()
   def minibatch(tokens:Tensor):
     if is_dp or is_fsdp: tokens = tokens.to(None).shard(device, 0)
-    if is_mp: tokens = tokens.shard(device)
+    # NOTE to(None) required here only when BS > 1
+    if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
