@@ -1423,7 +1423,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   if llama2_70b_lora:
     for p in params:
       if not p.requires_grad:
-        p.assign(p.zeros_like()) # so that random doesn't get materialized
+        p.replace(p.zeros_like()) # so that random doesn't get materialized
         p.requires_grad_(False)
 
   model.shard(device, is_mp, is_fsdp)
