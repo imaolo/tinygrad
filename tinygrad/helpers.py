@@ -4,7 +4,7 @@ START_TIME = time.perf_counter()
 import os, functools, platform, re, contextlib, operator, hashlib, pickle, sqlite3, tempfile, pathlib, string, ctypes, sys, gzip, getpass, gc
 from collections import defaultdict
 import subprocess, shutil, math, types, copyreg, inspect, importlib, decimal, itertools
-from dataclasses import dataclass, field, replace, asdict
+from dataclasses import dataclass, field, replace
 from typing import ClassVar, Iterable, Any, TypeVar, Callable, Sequence, TypeGuard, Iterator, Generic, Generator, cast, overload
 
 T = TypeVar("T")
@@ -61,6 +61,8 @@ def lo32(x:Any) -> Any: return x & 0xFFFFFFFF # Any is sint
 def hi32(x:Any) -> Any: return x >> 32 # Any is sint
 def data64(data:Any) -> tuple[Any, Any]: return (data >> 32, data & 0xFFFFFFFF) # Any is sint
 def data64_le(data:Any) -> tuple[Any, Any]: return (data & 0xFFFFFFFF, data >> 32) # Any is sint
+def to_be32(val:Any) -> Any: return ((val & 0xFF) << 24) | (((val >> 8) & 0xFF) << 16) | (((val >> 16) & 0xFF) << 8) | ((val >> 24) & 0xFF)
+def to_be64(val:Any) -> Any: return to_be32(val >> 32) | (to_be32(val & 0xFFFFFFFF) << 32)
 def getbits(value: int, start: int, end: int): return (value >> start) & ((1 << (end - start + 1)) - 1)
 def i2u(bits: int, value: int): return value if value >= 0 else (1<<bits)+value
 def is_numpy_ndarray(x) -> bool: return str(type(x)) == "<class 'numpy.ndarray'>"
@@ -179,13 +181,19 @@ class Target:
   device: str = ""
   renderer: str = ""
   arch: str = ""
+  interface: str = ""
 
   @staticmethod
   def parse(s:str) -> Target:
-    parts = [x.upper() if i < 2 else x for i,x in enumerate(s.split(':'))]
-    assert len(parts) <= 3, f"too many colons in target string: {s!r}"
-    return Target(*parts)
-  def __repr__(self) -> str: return re.sub(":*$", "", ":".join(asdict(self).values()))
+    if len(iface_split:=s.split('+')) == 2: iface, s = iface_split
+    elif len(iface_split) > 2: raise RuntimeError(f"too many '+' in target string: {s!r}")
+    else: iface = ""
+    match [x.upper() if i < 2 else x for i,x in enumerate(s.split(':'))]:
+      case [dev, ren, arch]: return Target(dev, ren, arch, iface)
+      case [dev, ren]: return Target(dev, ren, interface=iface)
+      case [dev]: return Target(dev, interface=iface)
+      case _: raise RuntimeError(f"too many ':' in target string: {s!r}")
+  def __repr__(self): return re.sub(":*$", "", (self.interface + "+" if self.interface else "") + ":".join([self.device, self.renderer, self.arch]))
   # replaces if not already set
   def replacedefault(self, **kwargs) -> Target: return replace(self, **{k:v for k,v in kwargs.items() if not getattr(self, k)})
 
@@ -243,8 +251,6 @@ ALLOW_TF32 = ContextVar("ALLOW_TF32", 0)
 SCACHE = ContextVar("SCACHE", 1)
 # allow use of atomics for embedding backward
 USE_ATOMICS = ContextVar("USE_ATOMICS", 0)
-# allow use of assembly for gemm
-ASM_GEMM = ContextVar("ASM_GEMM", 0)
 
 @dataclass(frozen=True)
 class Metadata:

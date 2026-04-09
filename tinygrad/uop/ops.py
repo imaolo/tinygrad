@@ -433,10 +433,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   def index(self, *srcs:UOp|None, ptr=False, **kwargs):
     return UOp(Ops.INDEX, kwargs.pop("dtype", self.dtype if ptr else self.dtype.base), (self,)+tuple([x for x in srcs if x is not None]), **kwargs)
   def __getitem__(self, idx):
-    idx = argfix(idx)
-    # add : to the end
-    if len(idx) < len(self.shape): idx += tuple([slice(None)]*(len(self.shape)-len(idx)))
-    assert len(idx) == len(self.shape), f"__getitem__ shape mismatch, indexing {self.shape} with {len(idx)} args"
+    idx = self._normalize_indices(list(argfix(idx)))
     if len(slice_idx:=[i for i,x in enumerate(idx) if isinstance(x, slice)]):
       # apply SHRINK for slices that aren't the full range
       bounds = tuple((s.start or 0, s.stop if s.stop is not None else self.shape[i]) if isinstance(s, slice) else (0, self.shape[i])
@@ -446,8 +443,7 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
       if not non_slice_args: return src  # all dims are slices, no indexing needed
       perm = src.permute(tuple([i for i in range(src.ndim) if i not in slice_idx] + slice_idx))
       return perm.index(*non_slice_args, ptr=True)
-    else:
-      return self.index(*[UOp.const(dtypes.weakint, x) if isinstance(x, int) else x for x in idx])
+    return self.index(*[UOp.const(dtypes.weakint, x) if isinstance(x, int) else x for x in idx])
   def const_like(self, b:ConstLike):
     # constants can optionally have a DEVICE source
     ret = UOp.const(self.dtype.base, b, device=self._device, shape=self.shard_shape if self.axis is not None else self._shape)
@@ -653,16 +649,6 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     # for all movement ops, we check shape property to validity check the movement op
     if ret.shape == self.shape and same_shape_noop: return self
     return ret
-
-  # in these four, if the shape doesn't change we can return self
-  #def reshape(self, arg:tuple[sint, ...]): return self._mop(Ops.RESHAPE, arg, same_shape_noop=True)
-  #def expand(self, arg:tuple[sint, ...]): return self._mop(Ops.EXPAND, arg, same_shape_noop=True)
-  #def shrink(self, arg:tuple[tuple[sint, sint], ...]): return self._mop(Ops.SHRINK, arg, same_shape_noop=True)
-  def pad(self, arg:tuple[tuple[sint, sint], ...]): return self._mop(Ops.PAD, arg, same_shape_noop=True)
-
-  # in these two, we have custom logic to check if they are a no-op
-  #def permute(self, arg:tuple[int, ...]): return self._mop(Ops.PERMUTE, arg, same_shape_noop=False) if arg != tuple(range(len(self.shape))) else self
-  #def flip(self, arg:tuple[bool, ...]): return self._mop(Ops.FLIP, arg, same_shape_noop=False) if any(arg) and len(arg) == len(self.shape) else self
 
   # *** uop UNIQUE ***
 
