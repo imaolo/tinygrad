@@ -218,7 +218,7 @@ def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[list[ExecItem], di
     return [], var_vals
 
   held_bufs = ({b for b in linear_call.src[1:] if b.op is Ops.BUFFER} if linear_call.op is Ops.CALL else set())
-  # linear, held_bufs = fold_mstack_copies(linear, held_bufs)
+  linear, held_bufs = fold_mstack_copies(linear, held_bufs)
   linear = memory_plan_rewrite(linear, held_bufs)
 
   # convert LINEAR to ExecItems
