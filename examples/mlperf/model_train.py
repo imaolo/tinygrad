@@ -1287,12 +1287,12 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, WQKV, LORA
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, LORA
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
 
-  if llama2_70b_lora: assert WQKV and LORA
+  if llama2_70b_lora: assert LORA
 
   INITMLPERF = getenv("INITMLPERF")
   RUNMLPERF = getenv("RUNMLPERF")

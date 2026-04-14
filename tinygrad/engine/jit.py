@@ -70,7 +70,7 @@ def jit_cache_bufs(jit_cache:list[ExecItem]):
 def jit_lower(linear:UOp, held_bufs:set[UOp], input_buffers:list[Buffer]|None=None) -> list[ExecItem]:
   if VIZ: graph_rewrite(linear, PatternMatcher([]), name="View captured linear")
   linear = memory_plan_rewrite(linear, held_bufs)
-  linear, held_bufs = fold_mstack_copies(linear, held_bufs)
+  # linear, held_bufs = fold_mstack_copies(linear, held_bufs)
   if JIT < 2: linear = graph_split_rewrite(linear, set(input_buffers or []), max_batch_size=JIT_BATCH_SIZE.value)
   if VIZ: graph_rewrite(linear, PatternMatcher([]), name="View graphed linear")
   return [ei.lower() for ei in linear_to_schedule(linear)]
