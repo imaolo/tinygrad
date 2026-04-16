@@ -1415,9 +1415,8 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   is_dp = (DP := getenv("DP", 1)) > 1
   is_mp = (MP := getenv("MP", 1)) > 1
-  is_fsdp = (FSDP := getenv("FSDP", 1)) > 1
-  is_sharding = is_dp or is_mp or is_fsdp
-  device_count = max(DP, MP, FSDP)
+  is_sharding = is_dp or is_mp
+  device_count = max(DP, MP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
   if llama2_70b_lora:
@@ -1426,7 +1425,7 @@ def train_llama3(llama2_70b_lora:bool=False):
         p.replace(p.zeros_like()) # so that random doesn't get materialized
         p.requires_grad_(False)
 
-  model.shard(device, is_mp, is_fsdp)
+  model.shard(device, is_mp)
 
   # load the model
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
@@ -1445,7 +1444,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
-  if is_dp or is_fsdp: vocab_mask.shard_(device, axis=None).realize()
+  if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
 
   is_offload_optim = bool(getenv("OFFLOAD_OPTIM"))
@@ -1476,7 +1475,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train()
   def minibatch(tokens:Tensor):
-    if is_dp or is_fsdp: tokens = tokens.to(None).shard(device, 0)
+    if is_dp: tokens = tokens.to(None).shard(device, 0)
     # NOTE to(None) required here only when BS > 1
     if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
@@ -1505,7 +1504,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train(False)
   def eval_step_llama2_70b_lora(tokens: Tensor, labels:Tensor):
-    if is_dp or is_fsdp:
+    if is_dp:
       tokens = tokens.to(None).shard(device, 0)
       labels = labels.to(None).shard(device, 0)
     if is_mp:
@@ -1521,7 +1520,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   @TinyJit
   @Tensor.train(False)
   def eval_step(tokens:Tensor):
-    if is_dp or is_fsdp: tokens = tokens.to(None).shard(device, 0)
+    if is_dp: tokens = tokens.to(None).shard(device, 0)
     if is_mp: tokens = tokens.shard(device)
     if not is_sharding: tokens = tokens.to(None)
     logits:Tensor = model(tokens[:, :-1])
