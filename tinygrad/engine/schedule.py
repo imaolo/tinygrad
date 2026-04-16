@@ -14,49 +14,6 @@ def _unwrap_src(s: UOp) -> UOp:
   while len(s.src) and s.op not in {Ops.AFTER, Ops.BUFFER, Ops.PARAM, Ops.MSELECT, Ops.MSTACK, Ops.BIND}: s = s.src[0]
   return s
 
-def _is_identity_store(ast:UOp) -> bool:
-  """Check if an AST is a simple identity store: output[i] = input[i]."""
-  if ast.op is not Ops.SINK or len(ast.src) != 1: return False
-  end = ast.src[0]
-  if end.op is not Ops.END or len(end.src) < 2: return False
-  store, *ranges = end.src
-  if store.op is not Ops.STORE or len(store.src) != 2: return False
-  dest, src = store.src
-  if dest.op is not Ops.INDEX or src.op is not Ops.INDEX: return False
-  if dest.src[0].op is not Ops.PARAM or src.src[0].op is not Ops.PARAM: return False
-  return dest.src[1:] == src.src[1:] == tuple(ranges)
-
-def fold_mstack_copies(linear:UOp, held_bufs:set[UOp]) -> tuple[UOp, set[UOp]]:
-  """Eliminate identity stores that copy MSTACK elements into multi-device BUFFERs.
-  For each such identity store, replace the per-device MSTACK elements with MSELECT views
-  of the multi-device BUFFER so that upstream writes (COPYs) go directly into the output."""
-  # count how many LINEAR items reference each multi-device BUFFER
-  buf_uses: dict[int, int] = {}
-  for si in linear.src:
-    for b in si.src[1:]:
-      if b.op is Ops.BUFFER and isinstance(b.device, tuple): buf_uses[id(b)] = buf_uses.get(id(b), 0) + 1
-  subs: dict[UOp, UOp] = {}
-  remove_items: set[int] = set()
-  for idx, si in enumerate(linear.src):
-    ast, bufs = si.src[0], si.src[1:]
-    if ast.op is Ops.SINK and len(bufs) == 2 and bufs[0].op is Ops.BUFFER and isinstance(bufs[0].device, tuple) \
-       and bufs[1].op is Ops.MSTACK and _is_identity_store(ast):
-      multi_buf, mstack = bufs[0], bufs[1]
-      if buf_uses.get(id(multi_buf), 0) > 1:
-        # CALL input case: replace multi-device BUFFER with MSTACK everywhere
-        subs[multi_buf] = mstack
-      else:
-        # final output case: replace MSTACK elements with MSELECT views of the multi-device BUFFER
-        for i, elem in enumerate(mstack.src):
-          if elem.op is Ops.BUFFER: subs[elem] = multi_buf.mselect(i)
-      remove_items.add(idx)
-  if not subs: return linear, held_bufs
-  held_bufs = held_bufs - {b for b in subs if b.op is Ops.BUFFER and isinstance(b.device, tuple)}
-  linear = linear.substitute(subs)
-  # remove identity stores that became no-ops
-  linear = linear.replace(src=tuple(si for i, si in enumerate(linear.src) if i not in remove_items))
-  return linear, held_bufs
-
 def _split_after(after: UOp) -> tuple[tuple[UOp, ...], tuple[UOp, ...]]:
   kernels, remaining = partition(after.src[1:], lambda s: s.op in {Ops.CALL, Ops.END})
   deps, remaining = partition(remaining, lambda s: s.op is Ops.AFTER)
@@ -218,7 +175,6 @@ def complete_create_schedule_with_vars(big_sink:UOp) -> tuple[list[ExecItem], di
     return [], var_vals
 
   held_bufs = ({b for b in linear_call.src[1:] if b.op is Ops.BUFFER} if linear_call.op is Ops.CALL else set())
-  linear, held_bufs = fold_mstack_copies(linear, held_bufs)
   linear = memory_plan_rewrite(linear, held_bufs)
 
   # convert LINEAR to ExecItems
