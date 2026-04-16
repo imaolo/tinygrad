@@ -16,6 +16,7 @@ from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit
 from tinygrad.helpers import Timing, colored, GlobalCounters, profile_marker
 from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
+from examples.mlperf.helpers import DisableExtendList
 
 FP8 = getenv("FP8", 0)
 LORA = getenv("LORA", 0)
@@ -137,7 +138,7 @@ class FlatTransformer:
                                 lora_a:Tensor|None=None, lora_b: Tensor|None=None,
                                 lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None):
     bsz, seqlen, _ = x.shape
-    new_amaxs, saves = [], []
+    new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])
@@ -171,7 +172,7 @@ class FlatTransformer:
 
   def feed_forward(self, x:Tensor, ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
                    amax_x1=None, amax_w1=None, amax_x2=None, amax_w2=None, amax_x3=None, amax_w3=None):
-    new_amaxs, saves = [], []
+    new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])

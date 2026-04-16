@@ -365,3 +365,10 @@ class BoxCoder(object):
     h = pred_ctr_y + 0.5 * pred_h - 1
     pred_boxes = Tensor.stack(x, y, w, h).permute(1,2,0).reshape(rel_codes.shape[0], rel_codes.shape[1])
     return pred_boxes
+
+class DisableExtendList(list):
+  def __init__(self, disable:bool):
+    super().__init__()
+    self.disable = disable
+  def extend(self, *args, **kwargs):
+    if not self.disable: super().extend(*args, **kwargs)
