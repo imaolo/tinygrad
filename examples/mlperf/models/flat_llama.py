@@ -24,6 +24,7 @@ LORA = getenv("LORA", 0)
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
+LAYER_BUFS = getenv('LAYER_BUFS', 0)
 
 # per-device abs max without allreduce (matches TE delayed scaling behavior)
 @functools.cache
@@ -122,6 +123,13 @@ class FlatTransformer:
       self._fp8_amax = {name: [_amax() for _ in range(n_layers)] for name in names}
       self._fp8_amax["xout"] = [_amax()]
       self._fp8_amax["wout"] = [_amax()]
+
+    if LAYER_BUFS:
+      self.wqkv_lb = self.wqkv[0].empty_like()
+      self.wo_lb = self.wo[0].empty_like()
+      self.w1_lb = self.w1[0].empty_like()
+      self.w2_lb = self.w2[0].empty_like()
+      self.w3_lb = self.w3[0].empty_like()
 
   def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
@@ -253,9 +261,16 @@ class FlatTransformer:
                     "amax_x2": a["x2"][i], "amax_w2": a["w2"][i],
                     "amax_x3": a["x3"][i], "amax_w3": a["w3"][i]} if a else {}
       lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
-      h, *ret = self.run_layer(h, freqs_cis,
-                               self.attention_norm[i], self.wqkv[i], self.wo[i],
-                               self.ffn_norm[i], self.w1[i], self.w2[i], self.w3[i],
+      if LAYER_BUFS:
+        wqkv = self.wqkv_lb.assign(self.wqkv[i]).realize()
+        wo = self.wo_lb.assign(self.wo[i]).realize()
+        w1 = self.w1_lb.assign(self.w1[i]).realize()
+        w2 = self.w2_lb.assign(self.w2[i]).realize()
+        w3 = self.w3_lb.assign(self.w3[i]).realize()
+      else:
+        wqkv, wo, w1, w2, w3 = self.wqkv[i], self.wo[i], self.w1[i], self.w2[i], self.w3[i]
+      h, *ret = self.run_layer(h, freqs_cis, self.attention_norm[i],
+                               wqkv, wo, self.ffn_norm[i], w1, w2, w3,
                                **amax_layer, **lora_kwargs)
       if a:
         amaxs = ret[:10]
