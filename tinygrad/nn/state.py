@@ -123,7 +123,7 @@ def get_parameters(obj) -> list[Tensor]:
   """
   return list(get_state_dict(obj).values())
 
-def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True) -> list[Tensor]:
+def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True, to:bool=True) -> list[Tensor]:
   """
   Loads a `state_dict` into a model. Return the loaded Tensors.
 
@@ -153,10 +153,13 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
       if v.shape != state_dict[k].shape:
         if {(), (1,)} == {state_dict[k].shape, v.shape}: state_dict[k] = state_dict[k].reshape(v.shape)
         else: raise ValueError(f'Shape mismatch in layer `{k}`: Expected shape {v.shape}, but found {state_dict[k].shape} in state dict.')
-      if isinstance(v.device, tuple):
-        if isinstance(state_dict[k].device, tuple): v.replace(state_dict[k])
-        else: v.replace(state_dict[k].shard(v.device, v.uop.axis))
-      else: v.replace(state_dict[k].to(v.device))
+      if to:
+        if isinstance(v.device, tuple):
+          if isinstance(state_dict[k].device, tuple): v.replace(state_dict[k])
+          else: v.replace(state_dict[k].shard(v.device, v.uop.axis))
+        else: v.replace(state_dict[k].to(v.device))
+      else:
+        v.replace(state_dict[k])
       if realize: v.realize()
       if consume: del state_dict[k]
       ret.append(v)

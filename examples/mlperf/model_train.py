@@ -1425,7 +1425,6 @@ def train_llama3(llama2_70b_lora:bool=False):
         p.replace(p.zeros_like()) # so that random doesn't get materialized
         p.requires_grad_(False)
 
-  model.shard(device, is_mp)
 
   # load the model
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
@@ -1440,7 +1439,11 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
-    load_state_dict(model, state_dict, strict=False)
+    load_state_dict(model, state_dict, strict=False, realize=False, to=False)
+
+  model.shard(device, is_mp)
+  for param in params:
+    param.realize()
 
   print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
