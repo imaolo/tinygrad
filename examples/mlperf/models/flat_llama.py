@@ -131,7 +131,8 @@ class FlatTransformer:
       self.w2_lb = self.w2[0].empty_like()
       self.w3_lb = self.w3[0].empty_like()
 
-  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, use_kaiming:bool=False, **kwargs):
+  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
+    if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
     if use_kaiming:
       return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
     else:
@@ -140,7 +141,7 @@ class FlatTransformer:
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
     kwargs = {'dtype': LORA_DTYPE} if (LORA_DTYPE:=getenv('LORA_DTYPE', '')) else {}
     a = self.lin_per_layer(in_dim, rank, requires_grad=True, use_kaiming=True, **kwargs)
-    b = self.lin_per_layer(rank, out_dim, requires_grad=True, **kwargs)
+    b = self.lin_per_layer(rank, out_dim, zerod=True, requires_grad=True, **kwargs)
     return a, b
 
   def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
