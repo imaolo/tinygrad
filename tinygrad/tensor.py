@@ -13,10 +13,10 @@ from tinygrad.gradient import compute_gradient
 from tinygrad.mixin import OpMixin, ReductionStr
 from tinygrad.uop.ops import smax, UOp, Ops, sint, all_metadata, _index_to_concrete_int, sint_to_uop, Variable
 from tinygrad.uop.ops import _broadcast_shape
-from tinygrad.engine.schedule import ExecItem, complete_create_schedule_with_vars
+from tinygrad.schedule import ExecItem, complete_create_schedule_with_vars
 from tinygrad.device import Buffer, canonicalize_device
 from tinygrad.engine.realize import run_schedule
-from tinygrad.engine.allocations import transform_to_call
+from tinygrad.callify import transform_to_call
 
 # *** all in scope Tensors are here. this gets relevant UOps ***
 
@@ -57,7 +57,7 @@ def _frompy(x:list|tuple|bytes, dtype:DType, device:str|tuple[str,...]) -> UOp:
     ret = UOp.new_buffer("PYTHON", prod(shape:=get_shape(x)), dtype).reshape(shape)
     assert dtype.fmt is not None, f"{dtype=} has None fmt"
     truncate_function = truncate[dtype]
-    data = struct.pack(f"{ret.size}{dtype.fmt}", *[truncate_function(dtype.const(xi)) for xi in fully_flatten(x)])
+    data = struct.pack(f"{prod(shape)}{dtype.fmt}", *[truncate_function(dtype.const(xi)) for xi in fully_flatten(x)])
   # fake realize. if target device is PYTHON it needs bytearray to be writable
   ret.buffer.allocate(memoryview(data if device != "PYTHON" else bytearray(data)))
   return ret
@@ -1297,41 +1297,6 @@ class Tensor(OpMixin):
     index = index.to(self.device)
     x = self.shrink_to(tuple(i if d != dim else None for d,i in enumerate(index.shape))).unsqueeze(-1).transpose(-1, dim)
     return (index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim]).where(x, 0)).sum(-1, dtype=self.dtype)
-
-  def cat(self:Tensor, *args:Tensor, dim:int=0) -> Tensor:
-    """
-    Concatenates self with other `Tensor` in `args` along an axis specified by `dim`.
-    All tensors must have the same shape except in the concatenating dimension.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    t0, t1, t2 = Tensor([[1, 2]]), Tensor([[3, 4]]), Tensor([[5, 6]])
-    print(t0.cat(t1, t2, dim=0).numpy())
-    ```
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(t0.cat(t1, t2, dim=1).numpy())
-    ```
-    """
-    dim = self._resolve_dim(dim)
-    for arg in args: assert arg.ndim==self.ndim and all(ti==ai for i,(ti,ai) in enumerate(zip(self.shape, arg.shape)) if i!=dim)
-    tensors = [self, *args]
-    dim_cumsum = list(itertools.accumulate([t.shape[dim] for t in tensors], initial=0))
-    for i,t in enumerate(tensors): tensors[i] = t.pad([(dim_cumsum[i], dim_cumsum[-1]-dim_cumsum[i+1]) if j==dim else None for j in range(t.ndim)])
-    return Tensor.usum(*tensors)
-
-  def stack(self:Tensor, *args:Tensor, dim:int=0) -> Tensor:
-    """
-    Concatenates self with other `Tensor` in `args` along a new dimension specified by `dim`.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    t0, t1, t2 = Tensor([1, 2]), Tensor([3, 4]), Tensor([5, 6])
-    print(t0.stack(t1, t2, dim=0).numpy())
-    ```
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(t0.stack(t1, t2, dim=1).numpy())
-    ```
-    """
-    # checks for shapes and number of dimensions delegated to cat
-    return Tensor.cat(*[t.unsqueeze(dim) for t in argfix(self, *args)], dim=dim)
 
   def masked_select(self, mask):
     """
@@ -2780,5 +2745,5 @@ def _metadata_wrapper(fn: Callable[P, T]) -> Callable[P, T]:
 
 if TRACEMETA >= 1:
   for name, fn in inspect.getmembers(Tensor, inspect.isfunction):
-    if name in ["__class__", "__init__", "__new__", "__repr__", "backward", "sequential", "gradient"]: continue
+    if name in ["__class__", "__del__", "__init__", "__new__", "__repr__", "backward", "sequential", "gradient"]: continue
     setattr(Tensor, name, functools.wraps(fn)(_metadata_wrapper(fn)))
