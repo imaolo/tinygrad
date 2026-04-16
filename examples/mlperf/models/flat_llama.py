@@ -25,9 +25,6 @@ FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
 
-def allgather(x: Tensor|None) -> Tensor|None:
-  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad) if x is not None else None 
-
 def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   new_amax = x.abs().max().detach()
   scale = FP8_MAX / ((amax_state if amax_state is not None else new_amax) + 1e-8)
