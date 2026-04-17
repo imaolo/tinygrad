@@ -1424,7 +1424,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       if not p.requires_grad:
         # important for the LOAD_MODEL=0 path
         # rand is mem hungry
-        p.replace(p.zeros_like()+1)
+        p.replace(p.empty_like())
         p.requires_grad_(False)
 
 
