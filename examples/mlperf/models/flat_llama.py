@@ -140,8 +140,8 @@ class FlatTransformer:
       assert weight.dtype is dtypes.bfloat16
 
       weight_fp8, scale_fp8 = quantize_weight_fp8(weight)
-      weight.replace(weight_fp8)
-      setattr(self, name+'_scale', scale_fp8)
+      weight.replace(weight_fp8).realize()
+      setattr(self, name+'_scale', scale_fp8.realize())
 
   def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
