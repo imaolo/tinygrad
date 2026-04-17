@@ -18,8 +18,8 @@ from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
 from examples.mlperf.helpers import DisableExtendList
 
-def allgather(x: Tensor|None) -> Tensor|None:
-  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad) if x is not None else None 
+def allgather(x: Tensor) -> Tensor:
+  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
 
 FP8 = getenv("FP8", 0)
 LORA = getenv("LORA", 0)
