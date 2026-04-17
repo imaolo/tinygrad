@@ -1287,7 +1287,7 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, LORA
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, LORA, PRE_QUANTIZE
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
@@ -1422,6 +1422,9 @@ def train_llama3(llama2_70b_lora:bool=False):
   if llama2_70b_lora:
     for p in params:
       if not p.requires_grad:
+        # important for the LOAD_MODEL=0 path
+        # rand is mem hungry
+        p.replace(p.zeros_like()+1)
         p.requires_grad_(False)
 
 
@@ -1439,6 +1442,9 @@ def train_llama3(llama2_70b_lora:bool=False):
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
     load_state_dict(model, state_dict, strict=False, realize=False, to=False)
+
+  if PRE_QUANTIZE:
+    model.quantize_base_weights()
 
   model.shard(device, is_mp)
   for param in params:
