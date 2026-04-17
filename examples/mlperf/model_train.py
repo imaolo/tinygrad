@@ -1419,6 +1419,13 @@ def train_llama3(llama2_70b_lora:bool=False):
   device_count = max(DP, MP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
+  def make_fake_load_state_dict() -> dict[str, Tensor]:
+    fake_state_dict = {k: Tensor.empty(v.shape, dtype=v.dtype, device=v.device, requires_grad=False)
+                       for k, v in get_state_dict(model).items() if not v.requires_grad}
+    total_bytes = sum(v.nbytes() for v in fake_state_dict.values())
+    print(f"creating fake checkpoint tensors: {len(fake_state_dict)} tensors, {total_bytes/1e9:.2f} GB")
+    return fake_state_dict
+
   if llama2_70b_lora:
     for p in params:
       if not p.requires_grad:
@@ -1431,15 +1438,18 @@ def train_llama3(llama2_70b_lora:bool=False):
   model.shard(device, is_mp)
 
   # load the model
-  if llama2_70b_lora and getenv("LOAD_MODEL", 1):
-    from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
+  if llama2_70b_lora and (getenv("LOAD_MODEL", 1) or getenv("FAKE_LOAD_MODEL", 0)):
+    if getenv("FAKE_LOAD_MODEL", 0):
+      state_dict = make_fake_load_state_dict()
+    else:
+      from extra.huggingface_onnx.huggingface_manager import DOWNLOADS_DIR, snapshot_download_with_retry
 
-    weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
-    print(f"downloading weights to {weights_path}")
-    weights_path.mkdir(parents=True, exist_ok=True)
-    snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
+      weights_path = DOWNLOADS_DIR/LLAMA2_70B_REPO_ID
+      print(f"downloading weights to {weights_path}")
+      weights_path.mkdir(parents=True, exist_ok=True)
+      snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
-    state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+      state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
