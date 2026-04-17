@@ -124,13 +124,6 @@ class FlatTransformer:
       self._fp8_amax["xout"] = [_amax()]
       self._fp8_amax["wout"] = [_amax()]
 
-    if LAYER_BUFS:
-      self.wqkv_lb = self.wqkv[0].empty_like()
-      self.wo_lb = self.wo[0].empty_like()
-      self.w1_lb = self.w1[0].empty_like()
-      self.w2_lb = self.w2[0].empty_like()
-      self.w3_lb = self.w3[0].empty_like()
-
   def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
     if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
     if use_kaiming:
@@ -254,6 +247,12 @@ class FlatTransformer:
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
     a = self._fp8_amax if FP8 else None
+    if LAYER_BUFS:
+      wqkv_lb = self.wqkv[0].empty_like()
+      wo_lb = self.wo[0].empty_like()
+      w1_lb = self.w1[0].empty_like()
+      w2_lb = self.w2[0].empty_like()
+      w3_lb = self.w3[0].empty_like()
     for i in range(self.n_layers):
       amax_layer = {"amax_xqkv": a["xqkv"][i], "amax_wqkv": a["wqkv"][i],
                     "amax_xo": a["xo"][i], "amax_wo": a["wo"][i],
@@ -262,11 +261,11 @@ class FlatTransformer:
                     "amax_x3": a["x3"][i], "amax_w3": a["w3"][i]} if a else {}
       lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       if LAYER_BUFS:
-        wqkv = self.wqkv_lb.assign(self.wqkv[i]).realize()
-        wo = self.wo_lb.assign(self.wo[i]).realize()
-        w1 = self.w1_lb.assign(self.w1[i]).realize()
-        w2 = self.w2_lb.assign(self.w2[i]).realize()
-        w3 = self.w3_lb.assign(self.w3[i]).realize()
+        wqkv = wqkv_lb.assign(self.wqkv[i]).realize()
+        wo = wo_lb.assign(self.wo[i]).realize()
+        w1 = w1_lb.assign(self.w1[i]).realize()
+        w2 = w2_lb.assign(self.w2[i]).realize()
+        w3 = w3_lb.assign(self.w3[i]).realize()
       else:
         wqkv, wo, w1, w2, w3 = self.wqkv[i], self.wo[i], self.w1[i], self.w2[i], self.w3[i]
       h, *ret = self.run_layer(h, freqs_cis, self.attention_norm[i],
