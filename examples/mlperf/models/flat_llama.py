@@ -302,11 +302,11 @@ class FlatTransformer:
       if self.fsdp:
         wqkv, wo, w1, w2, w3 = allgather(self.wqkv[i]), allgather(self.wo[i]), allgather(self.w1[i]), allgather(self.w2[i]), allgather(self.w3[i])
       if LAYER_BUFS:
-        wqkv = self.wqkv_lb.assign(allgather(wqkv)).realize()
-        wo = self.wo_lb.assign(allgather(wo)).realize()
-        w1 = self.w1_lb.assign(allgather(w1)).realize()
-        w2 = self.w2_lb.assign(allgather(w2)).realize()
-        w3 = self.w3_lb.assign(allgather(w3)).realize()
+        wqkv = self.wqkv_lb.assign(wqkv).realize()
+        wo = self.wo_lb.assign(wo).realize()
+        w1 = self.w1_lb.assign(w1).realize()
+        w2 = self.w2_lb.assign(w2).realize()
+        w3 = self.w3_lb.assign(w3).realize()
       h, *ret = self.run_layer(h, freqs_cis, self.attention_norm[i],
                                wqkv, wo, self.ffn_norm[i], w1, w2, w3,
                                **amax_layer, **lora_kwargs, **prequantize_kwargs)
