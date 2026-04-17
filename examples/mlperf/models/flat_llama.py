@@ -18,6 +18,9 @@ from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
 from examples.mlperf.helpers import DisableExtendList
 
+def allgather(x: Tensor|None) -> Tensor|None:
+  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad) if x is not None else None 
+
 FP8 = getenv("FP8", 0)
 LORA = getenv("LORA", 0)
 PRE_QUANTIZE = getenv("PRE_QUANTIZE", 1)
@@ -89,6 +92,7 @@ def rmsnorm(x_in:Tensor, eps:float) -> tuple[Tensor, Tensor]:
 
 class FlatTransformer:
   quantizeable_weight_names = ("wqkv", "wo", "w1", "w2", "w3")
+  fsdp_weight_names = ("wqkv", "wo", "w1", "w2", "w3")
 
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
@@ -101,6 +105,7 @@ class FlatTransformer:
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
+    self.fsdp=False
 
     # Attention
     self.wqkv = self.lin_per_layer(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2))
@@ -133,6 +138,13 @@ class FlatTransformer:
       self._fp8_amax = {name: [_amax() for _ in range(n_layers)] for name in names}
       self._fp8_amax["xout"] = [_amax()]
       self._fp8_amax["wout"] = [_amax()]
+
+    if LAYER_BUFS:
+      self.wqkv_lb = self.wqkv[0].empty_like()
+      self.wo_lb = self.wo[0].empty_like()
+      self.w1_lb = self.w1[0].empty_like()
+      self.w2_lb = self.w2[0].empty_like()
+      self.w3_lb = self.w3[0].empty_like()
 
   def quantize_base_weights(self):
     for name in self.quantizeable_weight_names:
@@ -241,10 +253,16 @@ class FlatTransformer:
     h = h + ffn
     return (h, *attn_amaxs, *ffn_amaxs, *attn_saves, *ffn_saves)
 
-  def shard(self, device:tuple[str, ...], mp:bool=False):
+  def shard(self, device:tuple[str, ...], mp:bool=False, fsdp:bool=False):
     from tinygrad.nn.state import get_parameters
+    assert not (mp and fsdp)
     if not mp:
-      for v in get_parameters(self): v.shard_(device, axis=None)
+      for name in self.fsdp_weight_names:
+        getattr(self, name).shard_(device, axis=1)
+        self.fsdp=True
+      for v in get_parameters(self):
+        if not isinstance(v.device, tuple):
+          v.shard_(device, axis=None)
     else:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
@@ -272,12 +290,6 @@ class FlatTransformer:
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
     a = self._fp8_amax if FP8 else None
-    if LAYER_BUFS:
-      wqkv_lb = self.wqkv[0].empty_like()
-      wo_lb = self.wo[0].empty_like()
-      w1_lb = self.w1[0].empty_like()
-      w2_lb = self.w2[0].empty_like()
-      w3_lb = self.w3[0].empty_like()
     for i in range(self.n_layers):
       amax_layer = {"amax_xqkv": a["xqkv"][i], "amax_wqkv": a["wqkv"][i],
                     "amax_xo": a["xo"][i], "amax_wo": a["wo"][i],
@@ -286,14 +298,15 @@ class FlatTransformer:
                     "amax_x3": a["x3"][i], "amax_w3": a["w3"][i]} if a else {}
       lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       prequantize_kwargs = {f"{name}_scale": getattr(self,f"{name}_scale")[i] for name in self.quantizeable_weight_names} if PRE_QUANTIZE else {}
+      wqkv, wo, w1, w2, w3 = self.wqkv[i], self.wo[i], self.w1[i], self.w2[i], self.w3[i]
+      if self.fsdp:
+        wqkv, wo, w1, w2, w3 = allgather(self.wqkv[i]), allgather(self.wo[i]), allgather(self.w1[i]), allgather(self.w2[i]), allgather(self.w3[i])
       if LAYER_BUFS:
-        wqkv = wqkv_lb.assign(self.wqkv[i]).realize()
-        wo = wo_lb.assign(self.wo[i]).realize()
-        w1 = w1_lb.assign(self.w1[i]).realize()
-        w2 = w2_lb.assign(self.w2[i]).realize()
-        w3 = w3_lb.assign(self.w3[i]).realize()
-      else:
-        wqkv, wo, w1, w2, w3 = self.wqkv[i], self.wo[i], self.w1[i], self.w2[i], self.w3[i]
+        wqkv = self.wqkv_lb.assign(allgather(wqkv)).realize()
+        wo = self.wo_lb.assign(allgather(wo)).realize()
+        w1 = self.w1_lb.assign(allgather(w1)).realize()
+        w2 = self.w2_lb.assign(allgather(w2)).realize()
+        w3 = self.w3_lb.assign(allgather(w3)).realize()
       h, *ret = self.run_layer(h, freqs_cis, self.attention_norm[i],
                                wqkv, wo, self.ffn_norm[i], w1, w2, w3,
                                **amax_layer, **lora_kwargs, **prequantize_kwargs)

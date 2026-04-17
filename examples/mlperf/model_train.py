@@ -1413,10 +1413,11 @@ def train_llama3(llama2_70b_lora:bool=False):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 
-  is_dp = (DP := getenv("DP", 1)) > 1
+  is_fsdp = (FSDP := getenv("FSDP", 1))
+  is_dp = (DP := getenv("DP", 1)) > 1 or is_fsdp
   is_mp = (MP := getenv("MP", 1)) > 1
   is_sharding = is_dp or is_mp
-  device_count = max(DP, MP)
+  device_count = max(DP, MP, FSDP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
   if llama2_70b_lora:
@@ -1428,7 +1429,7 @@ def train_llama3(llama2_70b_lora:bool=False):
         p.requires_grad_(False)
 
 
-  model.shard(device, is_mp)
+  model.shard(device, is_mp, is_fsdp)
 
   # load the model
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
