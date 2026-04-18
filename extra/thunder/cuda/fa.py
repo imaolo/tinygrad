@@ -9,7 +9,7 @@ def flash_attention(xq:Tensor, xk:Tensor, xv:Tensor, attn_mask:Tensor|None=None,
   # Keep the CUDA API aligned with the AMD path for flat_llama imports.
   # The current native CUDA prototype in fa.cu is not shape-compatible with LLaMA-70B
   # training yet, so route through the tiny custom-kernel implementation for now.
-  return _tiny_flash_attention(xq, xk, xv, attn_mask=attn_mask, is_causal=is_causal)
+  return (_tiny_flash_attention(xq, xk, xv, attn_mask=attn_mask, is_causal=is_causal),)
 
 if __name__ == "__main__":
   code = (pathlib.Path(__file__).parent / "fa.cu").read_text()
