@@ -235,7 +235,7 @@ class FlatTransformer:
     saves.extend(ret[2:] + [out])
     return (out, *new_amaxs, *saves)
 
-  @function(precompile=True, precompile_backward=True)
+  @function(precompile=True, precompile_backward=True, allow_implicit=True)
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
                 attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
