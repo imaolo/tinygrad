@@ -248,12 +248,14 @@ class FlatTransformer:
                                      amax_xqkv=amax_xqkv, amax_wqkv=amax_wqkv, amax_xo=amax_xo, amax_wo=amax_wo,
                                      lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo,
                                      wo_scale=wo_scale, wqkv_scale=wqkv_scale)
-    attn_amaxs, attn_saves = attn_ret[:4], attn_ret[4:]
+    attn_amax_count = 4 if FP8 else 0
+    attn_amaxs, attn_saves = attn_ret[:attn_amax_count], attn_ret[attn_amax_count:]
     h = x + attn
     ffn, *ffn_ret = self.feed_forward(h, ffn_norm, w1, w2, w3,
                                       amax_x1=amax_x1, amax_w1=amax_w1, amax_x2=amax_x2, amax_w2=amax_w2, amax_x3=amax_x3, amax_w3=amax_w3,
                                       w1_scale=w1_scale, w2_scale=w2_scale, w3_scale=w3_scale)
-    ffn_amaxs, ffn_saves = ffn_ret[:6], ffn_ret[6:]
+    ffn_amax_count = 6 if FP8 else 0
+    ffn_amaxs, ffn_saves = ffn_ret[:ffn_amax_count], ffn_ret[ffn_amax_count:]
     h = h + ffn
     return (h, *attn_amaxs, *ffn_amaxs, *attn_saves, *ffn_saves)
 
