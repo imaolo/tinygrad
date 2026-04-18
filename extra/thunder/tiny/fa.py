@@ -383,8 +383,14 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
   attn = _sharded_empty_like(xq, axis=0)
   l_vec = _sharded_empty((B, H, 1, N), xq, axis=0)
 
-  def grad_causal(gradu:UOp, _) -> tuple[None, None, UOp, UOp, UOp]:
+  def grad_causal(gradu:UOp, ker:UOp) -> tuple[None, None, UOp, UOp, UOp]:
     grad = Tensor(gradu, device=gradu.device)
+    attn = Tensor(ker.src[1].after(ker), device=ker.src[1].device)
+    l_vec = Tensor(ker.src[2].after(ker), device=ker.src[2].device)
+    xq = Tensor(ker.src[3], device=ker.src[3].device)
+    xk = Tensor(ker.src[4], device=ker.src[4].device)
+    xv = Tensor(ker.src[5], device=ker.src[5].device)
+
     grad_q = _sharded_empty_like(xq, axis=0)
     grad_k = _sharded_empty_like(xk, axis=0)
     grad_v = _sharded_empty_like(xv, axis=0)
@@ -395,8 +401,15 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
     grad_k, grad_v = Tensor.custom_kernel(grad_k, grad_v, grad, xq, xk, xv, l_vec, delta_vec, fxn=custom_backward_kv_causal)[:2]
     return (None, None, grad_q.uop, grad_k.uop, grad_v.uop)
 
-  def grad_masked(gradu:UOp, _) -> tuple[None, None, UOp, UOp, UOp, None]:
+  def grad_masked(gradu:UOp, ker:UOp) -> tuple[None, None, UOp, UOp, UOp, None]:
     grad = Tensor(gradu, device=gradu.device)
+    attn = Tensor(ker.src[1].after(ker), device=ker.src[1].device)
+    l_vec = Tensor(ker.src[2].after(ker), device=ker.src[2].device)
+    xq = Tensor(ker.src[3], device=ker.src[3].device)
+    xk = Tensor(ker.src[4], device=ker.src[4].device)
+    xv = Tensor(ker.src[5], device=ker.src[5].device)
+    attn_mask = Tensor(ker.src[6], device=ker.src[6].device)
+
     grad_q = _sharded_empty_like(xq, axis=0)
     grad_k = _sharded_empty_like(xk, axis=0)
     grad_v = _sharded_empty_like(xv, axis=0)
