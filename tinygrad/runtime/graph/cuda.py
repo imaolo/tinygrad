@@ -1,7 +1,7 @@
 import ctypes
 from typing import Any, cast
 import tinygrad.runtime.autogen.cuda as cuda
-from tinygrad.helpers import dedup
+from tinygrad.helpers import PROFILE, perf_counter_us, dedup
 from tinygrad.runtime.support.c import init_c_var
 from tinygrad.device import Buffer, Device
 from tinygrad.runtime.ops_cuda import CUDADevice, check, encode_args, cu_time_execution
@@ -70,7 +70,16 @@ class CUDAGraph(MultiGraphRunner):
       if not is_copy: check(cuda.cuGraphExecKernelNodeSetParams(self.instance, node, ctypes.byref(c_node_params)))
       else: check(cuda.cuGraphExecMemcpyNodeSetParams(self.instance, node, ctypes.byref(c_node_params), c_args))
 
-    return cu_time_execution(lambda: check(cuda.cuGraphLaunch(self.instance, None)), enable=wait)
+    if not PROFILE: return cu_time_execution(lambda: check(cuda.cuGraphLaunch(self.instance, None)), enable=wait)
+    dev = cast(CUDADevice, Device[self.device])
+    st = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
+    en = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
+    check(cuda.cuEventRecord(st, None))
+    check(cuda.cuGraphLaunch(self.instance, None))
+    check(cuda.cuEventRecord(en, None))
+    dev.pending_profile_records.append((st, en, self.display_name, perf_counter_us()))
+    if wait: dev.synchronize()
+    return None
 
   def __del__(self):
     if hasattr(self, 'graph'): check(cuda.cuGraphDestroy(self.graph))
