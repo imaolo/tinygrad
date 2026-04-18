@@ -257,9 +257,10 @@ class FlatTransformer:
     from tinygrad.nn.state import get_parameters
     assert not (mp and fsdp)
     if not mp:
-      for name in self.fsdp_weight_names:
-        getattr(self, name).shard_(device, axis=1)
-        self.fsdp=True
+      if fsdp:
+        for name in self.fsdp_weight_names:
+          getattr(self, name).shard_(device, axis=1)
+          self.fsdp=True
       for v in get_parameters(self):
         if not isinstance(v.device, tuple):
           v.shard_(device, axis=None)
