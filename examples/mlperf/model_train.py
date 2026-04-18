@@ -1413,7 +1413,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 
-  is_fsdp = (FSDP := getenv("FSDP", 1))
+  is_fsdp = (FSDP := getenv("FSDP", 1)) > 1
   is_dp = (DP := getenv("DP", 1)) > 1 or is_fsdp
   is_mp = (MP := getenv("MP", 1)) > 1
   is_sharding = is_dp or is_mp
