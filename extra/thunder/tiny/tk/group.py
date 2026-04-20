@@ -32,15 +32,15 @@ class Group:
   def is_cuda(self): return Device.DEFAULT.startswith("CUDA")
 
   def _cuda_wmma(self, c:UOp, a:UOp, b:UOp, height:UOp, width:UOp, inner:UOp) -> UOp:
-    a_in = UOp.vectorize(*[a.gep(i) for i in range(8)])
-    d0_in = UOp.vectorize(*[c.gep(i) for i in range(4)])
-    d1_in = UOp.vectorize(*[c.gep(i) for i in range(4, 8)])
-    b0_in = UOp.vectorize(*[b.gep(i) for i in _CUDA_B0_SCALARS])
-    b1_in = UOp.vectorize(*[b.gep(i) for i in _CUDA_B1_SCALARS])
+    a_in = UOp.vectorize(*[a[i] for i in range(8)])
+    d0_in = UOp.vectorize(*[c[i] for i in range(4)])
+    d1_in = UOp.vectorize(*[c[i] for i in range(4, 8)])
+    b0_in = UOp.vectorize(*[b[i] for i in _CUDA_B0_SCALARS])
+    b1_in = UOp.vectorize(*[b[i] for i in _CUDA_B1_SCALARS])
 
     out0 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b0_in, d0_in), arg=_CUDA_WMMA_ARG)
     out1 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b1_in, d1_in), arg=_CUDA_WMMA_ARG)
-    c_i = [c.gep(i).store(out0.gep(i)) for i in range(4)] + [c.gep(i+4).store(out1.gep(i)) for i in range(4)]
+    c_i = [c[i].store(out0.gep(i)) for i in range(4)] + [c[i+4].store(out1.gep(i)) for i in range(4)]
     return UOp.group(*c_i).end(height, width, inner)
 
   # ops that only work on a single warp
