@@ -12,7 +12,7 @@ if __name__ == "__main__":
     os.environ["HK_FLASH_ATTENTION"] = "1"
     if "ASM_GEMM" not in os.environ:
       os.environ["ASM_GEMM"] = "1"
-from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit
+from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit, Device
 from tinygrad.helpers import Timing, colored, GlobalCounters, profile_marker
 from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
@@ -29,6 +29,7 @@ FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
 LAYER_BUFS = getenv('LAYER_BUFS', 0)
+HK_FLASH_ATTENTION = getenv("HK_FLASH_ATTENTION", 0)
 
 # per-device abs max without allreduce (matches TE delayed scaling behavior)
 @functools.cache
@@ -197,7 +198,7 @@ class FlatTransformer:
     xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
     if FP8: xq, xk, xv = xq.cast(dtypes.bfloat16), xk.cast(dtypes.bfloat16), xv.cast(dtypes.bfloat16)
     xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
-    if getenv("HK_FLASH_ATTENTION"):
+    if HK_FLASH_ATTENTION:
       fa_device = xq.device[0] if isinstance(xq.device, tuple) else xq.device
       if str(fa_device).startswith("CUDA"):
         from extra.thunder.cuda.fa import flash_attention
@@ -235,7 +236,7 @@ class FlatTransformer:
     saves.extend(ret[2:] + [out])
     return (out, *new_amaxs, *saves)
 
-  @function(precompile=True, precompile_backward=True, allow_implicit=True)
+  @function(precompile=True, precompile_backward=True, allow_implicit=HK_FLASH_ATTENTION and Device.DEFAULT.startswith('CUDA'))
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
                 attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
