@@ -1,12 +1,18 @@
 import math
 from typing import cast, Callable
 from tinygrad import dtypes
+from tinygrad.device import Device
 from tinygrad.uop.ops import AxisType, UOp, Ops
 from tinygrad.dtype import AddrSpace, PtrDType
 from tinygrad.helpers import prod
 
 from extra.thunder.tiny.tk import WARP_THREADS
 from extra.thunder.tiny.tk.tiles import ALL_TILES, ST, RT, RV, TileLayout, VecLayout
+
+_CUDA_WMMA_ARG = ('WMMA_8_16_16___bf16_float', (8, 16, 16), dtypes.bfloat16, dtypes.float, 'CUDA', 32,
+                  (((0, 2), (1, 2), (2, 2)), ((3, 2), (4, 2)), ((5, 2), (6, 2))), ()) # type: ignore
+_CUDA_B0_SCALARS = (0, 1, 4, 5)
+_CUDA_B1_SCALARS = (2, 3, 6, 7)
 
 class Group:
   def __init__(self, warps:int, ker):
@@ -21,6 +27,21 @@ class Group:
   def warpid(self): return self.laneid // WARP_THREADS
   @property
   def groupid(self): return self.ker.threadIdx_x // self.group_threads
+
+  @property
+  def is_cuda(self): return Device.DEFAULT.startswith("CUDA")
+
+  def _cuda_wmma(self, c:UOp, a:UOp, b:UOp, height:UOp, width:UOp, inner:UOp) -> UOp:
+    a_in = UOp.vectorize(*[a.gep(i) for i in range(8)])
+    d0_in = UOp.vectorize(*[c.gep(i) for i in range(4)])
+    d1_in = UOp.vectorize(*[c.gep(i) for i in range(4, 8)])
+    b0_in = UOp.vectorize(*[b.gep(i) for i in _CUDA_B0_SCALARS])
+    b1_in = UOp.vectorize(*[b.gep(i) for i in _CUDA_B1_SCALARS])
+
+    out0 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b0_in, d0_in), arg=_CUDA_WMMA_ARG)
+    out1 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b1_in, d1_in), arg=_CUDA_WMMA_ARG)
+    c_i = [c.gep(i).store(out0.gep(i)) for i in range(4)] + [c.gep(i+4).store(out1.gep(i)) for i in range(4)]
+    return UOp.group(*c_i).end(height, width, inner)
 
   # ops that only work on a single warp
 
@@ -74,6 +95,14 @@ class Group:
     assert self.warps == 1
 
     a_base_shape = cast(RT, a).base_shape
+    if self.is_cuda:
+      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AB not implemented for {a_base_shape.cols=}")
+      for height in self.ker.range(c.shape[-3], track=False):
+        for width in self.ker.range(c.shape[-2], track=False):
+          for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
+            c_store = self._cuda_wmma(c[height, width], a[height, inner], b[inner, width], height, width, inner)
+      self.ker.push_store(c_store, c)
+      return c.after(c_store).reshape(c.shape)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -104,6 +133,14 @@ class Group:
     assert self.warps == 1
 
     a_base_shape = cast(RT, a).base_shape
+    if self.is_cuda:
+      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_ABt not implemented for {a_base_shape.cols=}")
+      for height in self.ker.range(c.shape[-3], track=False):
+        for width in self.ker.range(c.shape[-2], track=False):
+          for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
+            c_store = self._cuda_wmma(c[height, width], a[height, inner], b[width, inner], height, width, inner)
+      self.ker.push_store(c_store, c)
+      return c.after(c_store).reshape(c.shape)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -134,6 +171,14 @@ class Group:
     assert self.warps == 1
 
     a_base_shape = cast(RT, a).base_shape
+    if self.is_cuda:
+      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtB not implemented for {a_base_shape.cols=}")
+      for height in self.ker.range(c.shape[-3], track=False):
+        for width in self.ker.range(c.shape[-2], track=False):
+          for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
+            c_store = self._cuda_wmma(c[height, width], a[inner, height], b[inner, width], height, width, inner)
+      self.ker.push_store(c_store, c)
+      return c.after(c_store).reshape(c.shape)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -164,6 +209,14 @@ class Group:
     assert self.warps == 1
 
     a_base_shape = cast(RT, a).base_shape
+    if self.is_cuda:
+      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtBt not implemented for {a_base_shape.cols=}")
+      for height in self.ker.range(c.shape[-3], track=False):
+        for width in self.ker.range(c.shape[-2], track=False):
+          for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
+            c_store = self._cuda_wmma(c[height, width], a[inner, height], b[width, inner], height, width, inner)
+      self.ker.push_store(c_store, c)
+      return c.after(c_store).reshape(c.shape)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
