@@ -31,6 +31,26 @@ class Group:
   @property
   def is_cuda(self): return Device.DEFAULT.startswith("CUDA")
 
+  def _rt_coords(self, rt:RT, laneid:UOp, inner:UOp) -> tuple[UOp, UOp]:
+    # CUDA WMMA fragments use a different per-lane packing than AMD wave64.
+    # Match the mapping in tinygrad/runtime/ops_python.py so load/store agree with the WMMA emulator.
+    if self.is_cuda and rt.base_shape.rows == 16 and rt.base_shape.cols == 16:
+      if rt.layout == TileLayout.ROW:
+        row = 8 * ((inner // 2) % 2) + laneid // 4
+        col = 2 * (laneid % 4) + (inner % 2) + 8 * (inner // 4)
+      else:
+        t = (inner % 2) + 2 * (inner // 4)
+        row = 2 * (laneid % 4) + (t % 2) + 8 * (t // 2)
+        col = 8 * ((inner // 2) % 2) + laneid // 4
+      return row, col
+    if rt.layout == TileLayout.COL:
+      row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
+      col = laneid % rt.base_shape.cols
+    else:
+      row = laneid % rt.base_shape.rows
+      col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
+    return row, col
+
   def _cuda_wmma(self, c:UOp, a:UOp, b:UOp, height:UOp, width:UOp, inner:UOp) -> UOp:
     a_in = UOp.vectorize(*[a[i] for i in range(8)])
     d0_in = UOp.vectorize(*[c[i] for i in range(4)])
@@ -342,12 +362,7 @@ class Group:
       for height in self.ker.range(dst.shape[-3], track=False):
         for width in self.ker.range(dst.shape[-2], track=False):
           for inner in self.ker.range(elements_per_thread, track=False):
-            if rt.layout != st.layout:
-              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
-              col = laneid % rt.base_shape.cols
-            else:
-              row = laneid % rt.base_shape.rows
-              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
+            row, col = self._rt_coords(rt, laneid, inner)
 
             sheight = height
             swidth = width
@@ -419,12 +434,7 @@ class Group:
             base_row = height * rt.base_shape.rows
             base_col = width * rt.base_shape.cols
 
-            if rt.layout == TileLayout.COL:
-              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
-              col = laneid % rt.base_shape.cols
-            else:
-              row = laneid % rt.base_shape.rows
-              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
+            row, col = self._rt_coords(rt, laneid, inner)
 
             srow, scol = base_row + row, base_col + col
 
@@ -472,12 +482,7 @@ class Group:
       for height in self.ker.range(src.shape[-3], track=False):
         for width in self.ker.range(src.shape[-2], track=False):
           for inner in self.ker.range(elements_per_thread, track=False):
-            if rt.layout != st.layout:
-              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
-              col = laneid % rt.base_shape.cols
-            else:
-              row = laneid % rt.base_shape.rows
-              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
+            row, col = self._rt_coords(rt, laneid, inner)
 
             srow, scol = cast(ST, dst).swizzle(row, col)
 
@@ -504,12 +509,7 @@ class Group:
             base_row = height * rt.base_shape.rows
             base_col = width * rt.base_shape.cols
 
-            if rt.layout == TileLayout.COL:
-              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
-              col = laneid % rt.base_shape.cols
-            else:
-              row = laneid % rt.base_shape.rows
-              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
+            row, col = self._rt_coords(rt, laneid, inner)
 
             srow, scol = base_row + row, base_col + col
 
