@@ -150,6 +150,14 @@ def finalize_after(ctx:AllocCtx, x:UOp):
     ctx.buffer_map[original_uop] = replace_uop.shrink_to(original_uop.shape)
   return ret
 
+def materialize_root(x:UOp, buffer_map:dict[UOp, UOp]) -> UOp|None:
+  # Callify can rewrite a requested output into an AFTER-wrapped buffer without tagging the new buffer.
+  # Substitute any finalized buffers we know about, then strip AFTER deps to recover the concrete result buffer/view.
+  ret = x.substitute(buffer_map, walk=True, name="materialize root")
+  after_map = {u: u.src[0] for u in ret.toposort() if u.op is Ops.AFTER}
+  if after_map: ret = ret.substitute(after_map, walk=True, name="strip after from root")
+  return ret if ret.has_buffer_identity() else None
+
 def replace_input_buffer(ctx:AllocCtx, b:UOp):
   ctx.replacements.append(b)
   return UOp.param(len(ctx.replacements)-1, b.dtype, b.shape, b._device,
@@ -174,6 +182,7 @@ pm_replace_buf = PatternMatcher([
 @track_rewrites(lambda _,ret: f"Callify {pluralize('Buffer', len(ret[1]))}")
 def transform_to_call(big_sink:UOp) -> tuple[UOp, dict[UOp, UOp]]:
   if VIZ: graph_rewrite(big_sink, PatternMatcher([]), name="View Tensor Graph")
+  requested_roots = big_sink.src
   # uop list is a list in the original_sink graph and we can map to the tags later
   # here we build buffer map
   dont_realize = {Ops.CONST, Ops.BUFFER, Ops.BIND, Ops.DEFINE_VAR, Ops.AFTER}
@@ -185,9 +194,11 @@ def transform_to_call(big_sink:UOp) -> tuple[UOp, dict[UOp, UOp]]:
 
   # here we can break the tensor graph. this is the only place you need to maintain numbered tags
   big_sink = graph_rewrite(big_sink, pm_early_transform_tensor_graph, name="early transform tensor graph")
+  rewritten_roots = big_sink.src
 
   # here we construct the final buffer_map. this is everything that will go into the tensor map
   graph_rewrite(big_sink, pm_finalize_call, ctx=ctx, name="finalize call")
+  ctx.buffer_map.update({orig: mat for orig, root in zip(requested_roots, rewritten_roots) if (mat:=materialize_root(root, ctx.buffer_map)) is not None})
   ret = graph_rewrite(UOp.sink(*ctx.assigns), pm_replace_buf, ctx=ctx, bottom_up=True, name="replace bufs").call(*ctx.replacements)
   if VIZ: graph_rewrite(ret, PatternMatcher([]), name="View Call")
   return ret, ctx.buffer_map
