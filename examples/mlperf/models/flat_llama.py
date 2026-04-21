@@ -310,14 +310,16 @@ class FlatTransformer:
       if self.fsdp:
         wqkv, wo, w13, w2 = allgather(wqkv), allgather(wo), allgather(w13), allgather(w2)
       if LAYER_BUFS:
-        wqkv = self.wqkv_lb.assign(wqkv).realize()
-        wo = self.wo_lb.assign(wo).realize()
-        w13 = self.w13_lb.assign(w13).realize()
-        w2 = self.w2_lb.assign(w2).realize()
+        wqkv = self.wqkv_lb.assign(wqkv)
+        wo = self.wo_lb.assign(wo)
+        w13 = self.w13_lb.assign(w13)
+        w2 = self.w2_lb.assign(w2)
       h, *ret = self.run_layer(h, freqs_cis,
                                self.attention_norm[i], wqkv, wo,
                                self.ffn_norm[i], w13, w2,
                                **amax_layer, **scale_layer, **lora_layer)
+      if LAYER_BUFS:
+        h.realize()
       if a:
         amaxs = ret[:5]
         amax_names = ["xqkv", "xo", "x13", "x2"]
