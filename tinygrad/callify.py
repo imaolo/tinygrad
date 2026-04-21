@@ -77,6 +77,11 @@ def contiguous_mops_to_view(c:UOp, src:UOp):
     if not hasattr(Device[c.device].allocator, "_offset"): return None
   elif not all(hasattr(Device[d].allocator, "_offset") for d in c.device): return None
 
+  # replicated tuple-device buffers can lower directly to tuple-device BUFFER_VIEWs
+  if not isinstance(c.device, str) and src.axis is None:
+    if (view := _make_buffer_view(src)) is None: return None
+    return view.contiguous(tag=c.tag)
+
   # for MULTI tensors, use multi_pm to resolve per-shard movement ops, then create BUFFER_VIEW on the resolved result
   if not isinstance(c.device, str):
     from tinygrad.schedule.multi import multi_pm

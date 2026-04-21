@@ -1,6 +1,6 @@
-import unittest
+import gc, unittest
 import numpy as np
-from tinygrad import Tensor, function
+from tinygrad import Tensor, function, GlobalCounters
 from tinygrad.dtype import dtypes
 from tinygrad.uop.ops import UOp, Ops
 
@@ -243,6 +243,31 @@ class TestCallSchedule(unittest.TestCase):
     a = Tensor.arange(8).reshape(4, 2).float().shard(devs, axis=0)
     out = f(a) + 2
     np.testing.assert_allclose(out.numpy(), np.arange(8, dtype=np.float32).reshape(4, 2) + 3)
+
+  def test_precompile_multi_replicated_index_peak_mem_flat_across_layers(self):
+    devs = ("NULL:1", "NULL:2")
+
+    def run_case(n_layers:int) -> int:
+      x = Tensor.empty(8, 128, 64, device="NULL").to(devs).realize()
+      y = Tensor.empty(8, 128, 64, device="NULL").to(devs).realize()
+      GlobalCounters.reset()
+
+      @function(precompile=True)
+      def f(a:Tensor, b:Tensor) -> Tensor: return (a*b).sum()
+
+      accum = 0
+      for i in range(n_layers): accum = accum + f(x[i], y[i])
+      accum.realize()
+
+      peak = GlobalCounters.peak_mem_used_per_device["NULL:1"]
+      del accum, x, y
+      gc.collect()
+      return peak
+
+    low_layers, high_layers = 1, 4
+    low_peak = run_case(low_layers)
+    high_peak = run_case(high_layers)
+    self.assertEqual(high_peak - low_peak, dtypes.default_float.itemsize * (high_layers - low_layers))
 
 class TestCallMultiSharded(unittest.TestCase):
   # TODO: multi-output + sharded needs per-device CALL execution, which requires reworking how MULTI propagates through TUPLE bodies
