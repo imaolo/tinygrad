@@ -1441,6 +1441,8 @@ def train_llama3(llama2_70b_lora:bool=False):
     snapshot_download_with_retry(repo_id=LLAMA2_70B_REPO_ID, local_dir=weights_path, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
+    # they are combined now
+    state_dict["w13"] = state_dict["w1"].cat(state_dict["w3"], dim=1)
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
