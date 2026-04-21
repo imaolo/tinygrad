@@ -280,8 +280,9 @@ class Group:
       red_local_store = red_local[self.laneid].store(red_reg[0])
       red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      # reduce from shared memory
-      for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
+      # reduce across the remaining 16-lane fragments in the warp.
+      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
+      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
         offset = (self.laneid + (1 + inner) * 16) % self.group_threads
         reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
         red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
@@ -314,8 +315,9 @@ class Group:
       red_local_store = red_local[self.laneid].store(red_reg[0])
       red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      # reduce from shared memory
-      for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
+      # reduce across the remaining 16-lane fragments in the warp.
+      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
+      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
         offset = (self.laneid + (1 + inner) * 16) % self.group_threads
         reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
         red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
