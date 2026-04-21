@@ -161,7 +161,7 @@ class FlatTransformer:
     return out * self.lora_scale
 
   def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
-    if zerod or getenv("ZEROS"): w = Tensor.zeros(self.n_layers, out_features, in_features)
+    if zerod or getenv("ZEROS"): w = Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
     else:
       if use_kaiming:
         w = Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
