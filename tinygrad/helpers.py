@@ -32,6 +32,7 @@ def argsort(x): return type(x)(sorted(range(len(x)), key=x.__getitem__))
 def all_same(items:Sequence): return all(x == items[0] for x in items)  # works for empty input
 def all_int(t: Sequence[Any]) -> TypeGuard[tuple[int, ...]]: return all(isinstance(s, int) for s in t)
 def colored(st, color:str|None, background=False): # replace the termcolor library
+  if NO_COLOR: return st
   colors = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white']
   return f"\u001b[{10*background+60*(color.upper() == color)+30+colors.index(color.lower())}m{st}\u001b[0m" if color is not None else st
 def colorize_float(x: float): return colored(f"{x:7.2f}x", 'green' if x < 0.75 else 'red' if x > 1.15 else 'yellow')
@@ -44,6 +45,12 @@ def flatten(l:Iterable[Iterable[T]]): return [item for sublist in l for item in 
 def fully_flatten(l):
   if not (hasattr(l, "__len__") and hasattr(l, "__getitem__")) or isinstance(l, str): return [l]
   return [l[()]] if hasattr(l, "shape") and l.shape == () else [x for li in l for x in fully_flatten(li)]
+#  `(padding_left, padding_right, padding_top, padding_bottom, ...)` ->  `(..., (padding_top, padding_bottom), (padding_left, padding_right))`
+def flat_to_grouped(padding:Sequence[T]) -> tuple[tuple[T, T], ...]: return tuple(zip(padding[-2::-2], padding[::-2]))
+def resolve_pool_pads(padding:int|Sequence[int], dims:int) -> Sequence[int]:
+  if not isinstance(padding, int) and not (len(padding) == 2*dims or len(padding) == dims):
+    raise ValueError(f"Padding must be an int or a sequence of length {dims} or {2*dims}, but got {padding=} with {dims=}.")
+  return [padding]*2*dims if isinstance(padding, int) else (padding if len(padding) == 2*dims else [p for p in padding for _ in range(2)][::-1])
 def fromimport(mod, frm): return getattr(__import__(mod, fromlist=[frm]), frm)
 def _is_balanced(s:str) -> bool: return (d := 0, all((d := d + (c == '(') - (c == ')')) >= 0 for c in s))[1] and d == 0
 def strip_parens(fst:str) -> str: return fst[1:-1] if fst[:1]=='(' and fst[-1:]==')' and _is_balanced(fst[1:-1]) else fst
@@ -224,7 +231,7 @@ class _DEV(ContextVar):
 DEV, DEBUG, BEAM, NOOPT = _DEV("DEV", ""), ContextVar("DEBUG", 0), ContextVar("BEAM", 0), ContextVar("NOOPT", 0)
 IMAGE, FLOAT16, OPENPILOT_HACKS = ContextVar("IMAGE", 0), ContextVar("FLOAT16", 0), ContextVar("OPENPILOT_HACKS", 0)
 JIT, JIT_BATCH_SIZE = ContextVar("JIT", 2 if OSX and ARCH_X86 else 1), ContextVar("JIT_BATCH_SIZE", 32)
-WINO, CAPTURING, TRACEMETA = ContextVar("WINO", 0), ContextVar("CAPTURING", 1), ContextVar("TRACEMETA", 1)
+WINO, CAPTURING, TRACEMETA, NO_COLOR = ContextVar("WINO", 0), ContextVar("CAPTURING", 1), ContextVar("TRACEMETA", 1), ContextVar("NO_COLOR", 0)
 USE_TC, TC_SELECT, TC_OPT, AMX = ContextVar("TC", 1), ContextVar("TC_SELECT", -1), ContextVar("TC_OPT", 0), ContextVar("AMX", 0)
 TRANSCENDENTAL, NOLOCALS = ContextVar("TRANSCENDENTAL", 1), ContextVar("NOLOCALS", 0)
 SPLIT_REDUCEOP, NO_MEMORY_PLANNER, LRU = ContextVar("SPLIT_REDUCEOP", 1), ContextVar("NO_MEMORY_PLANNER", 0), ContextVar("LRU", 1)

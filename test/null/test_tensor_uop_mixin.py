@@ -1,5 +1,6 @@
 import math, unittest
-from tinygrad import Tensor
+from tinygrad import Tensor, dtypes
+from tinygrad.uop.ops import UOp
 
 def _t(*shape):
   return Tensor.arange(math.prod(shape)).reshape(*shape)
@@ -69,6 +70,68 @@ class TestTensorUOpStack(unittest.TestCase):
   def test_stack_dim1(self):     _check(self, _t(2, 3), lambda x: x.stack(x, dim=1))
   def test_stack_3tensors(self): _check(self, _t(2, 3), lambda x: x.stack(x, x, dim=0))
   def test_stack_new_last(self): _check(self, _t(2, 3), lambda x: x.stack(x, dim=-1))
+
+class TestTensorUOpConv2d(unittest.TestCase):
+  def test_conv2d_basic(self):
+    w = _t(1, 1, 2, 2).float()
+    _check(self, _t(1, 1, 3, 3).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop))
+  def test_conv2d_padded(self):
+    w = _t(1, 1, 2, 2).float()
+    _check(self, _t(1, 1, 3, 3).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop, padding=1))
+  def test_conv2d_negative_padding(self):
+    w = _t(1, 1, 3, 3).float()
+    _check(self, _t(1, 1, 5, 5).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop, padding=(-1,-1,-1,-1)))
+  def test_conv2d_multichannel_bias(self):
+    w, b = _t(4, 2, 3, 3).float(), _t(4).float()
+    _check(self, _t(2, 2, 5, 5).float(), lambda x: x.conv2d(*(y if isinstance(x, Tensor) else y.uop for y in (w, b))))
+  def test_conv2d_stride_dilation(self):
+    w = _t(2, 2, 2, 2).float()
+    _check(self, _t(1, 2, 6, 6).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop, stride=2, dilation=2))
+  def test_conv2d_groups(self):
+    w = _t(4, 1, 2, 2).float()
+    _check(self, _t(1, 4, 4, 4).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop, groups=4))
+  def test_conv2d_3d(self):
+    w = _t(1, 1, 2, 2, 2).float()
+    _check(self, _t(1, 1, 3, 3, 3).float(), lambda x: x.conv2d(w if isinstance(x, Tensor) else w.uop))
+  def test_conv_transpose2d_basic(self):
+    w = _t(1, 1, 2, 2).float()
+    _check(self, _t(1, 1, 3, 3).float(), lambda x: x.conv_transpose2d(w if isinstance(x, Tensor) else w.uop))
+  def test_conv_transpose2d_stride(self):
+    w = _t(1, 1, 2, 2).float()
+    _check(self, _t(1, 1, 3, 3).float(), lambda x: x.conv_transpose2d(w if isinstance(x, Tensor) else w.uop, stride=2))
+
+class TestTensorUOpEinsum(unittest.TestCase):
+  def test_einsum_dot(self):       _check(self, _t(2, 3), lambda x: type(x).einsum("ij,ij->", x, x))
+  def test_einsum_transpose(self): _check(self, _t(2, 3), lambda x: type(x).einsum("ij->ji", x))
+
+class TestTensorUOpSoftmax(unittest.TestCase):
+  def test_softmax_default(self):     _check(self, _t(2, 3).float(), lambda x: x.softmax())
+  def test_softmax_axis0(self):       _check(self, _t(2, 3).float(), lambda x: x.softmax(axis=0))
+  def test_log_softmax_default(self): _check(self, _t(2, 3).float(), lambda x: x.log_softmax())
+  def test_log_softmax_axis0(self):   _check(self, _t(2, 3).float(), lambda x: x.log_softmax(axis=0))
+
+# UOp.empty / UOp.empty_like are the canonical buffer allocators; Tensor.empty / Tensor.empty_like just forward.
+class TestUOpEmpty(unittest.TestCase):
+  def test_empty_dtype_string(self):
+    self.assertEqual(UOp.empty((3, 4), dtype="float32").dtype, dtypes.float32)
+
+  def test_empty_like_dtype_override(self):
+    u = Tensor.ones(3, 4).uop.empty_like(dtype=dtypes.int8)
+    self.assertEqual((u.shape, u.dtype), ((3, 4), dtypes.int8))
+    self.assertTrue(u.has_buffer_identity())
+
+  def test_empty_like_sharded_to_single_device(self):
+    # regression: sharded source, override to single device must yield full logical shape with no axis
+    t = Tensor.ones(8, 4).shard(("NULL:0", "NULL:1"), axis=0)
+    for dev in ("NULL:2", ("NULL:2",)):  # singleton tuple also canonicalizes to single device
+      u = t.uop.empty_like(device=dev, dtype=dtypes.int32)
+      self.assertEqual((u.shape, u.device, u.dtype, u.axis), ((8, 4), "NULL:2", dtypes.int32, None))
+      self.assertTrue(u.has_buffer_identity())
+
+  def test_empty_direct_singleton_tuple_device(self):
+    # regression: direct UOp.empty with a singleton-tuple device + axis must not trip .multi()'s tuple assert
+    u = UOp.empty((4,), dtype=dtypes.float32, device=("NULL:0",), axis=0)
+    self.assertEqual((u.shape, u.device, u.axis), ((4,), "NULL", None))
 
 if __name__ == "__main__":
   unittest.main()

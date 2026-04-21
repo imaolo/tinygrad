@@ -56,20 +56,19 @@ def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   x_clamped = x_scaled + (x_scaled.detach().clamp(-FP8_MAX, FP8_MAX) - x_scaled.detach())  # STE
   return x_clamped.cast(FP8_DTYPE), scale.float().reciprocal(), new_amax
 
-# w_scale means w has been pre-quantized
-def matmul(x:Tensor, w:Tensor, fp8=FP8, amax_x:Tensor|None=None, amax_w:Tensor|None=None, w_scale:Tensor|None=None) -> tuple[Tensor,...]:
-  if not fp8 and w_scale is None:
+def matmul(x:Tensor, w:Tensor, fp8=FP8, amax_x:Tensor|None=None, w_inv_scale:Tensor|None=None,
+           x_fp8:Tensor|None=None, x_scale:Tensor|None=None, x_new_amax:Tensor|None=None) -> tuple[Tensor,...]:
+  if not fp8:
     if getenv("ASM_GEMM"):
       from extra.gemm.cdna_asm_gemm import can_use_asm_gemm, asm_gemm
       if can_use_asm_gemm(x, w.T): return (asm_gemm(x, w.T),)
     return (x @ w.T,)
-  x_fp8, x_scale, x_new_amax = quantize_fp8(x, amax_state=amax_x)
-  w_fp8, w_scale, w_new_amax = quantize_fp8(w, amax_state=amax_w) if w_scale is None else (w, w_scale, None)
-  combined_scale = x_scale * w_scale
+  assert w_inv_scale is not None, "fp8 matmul requires w_inv_scale (weights must be stored in fp8 with per-tensor scale)"
+  if x_fp8 is None: x_fp8, x_scale, x_new_amax = quantize_fp8(x, amax_state=amax_x)
   if getenv("ASM_GEMM"):
     from extra.gemm.cdna_asm_gemm import can_use_asm_gemm, asm_gemm
-    if can_use_asm_gemm(x_fp8, w_fp8.T): return asm_gemm(x_fp8, w_fp8.T, combined_scale=combined_scale), x_new_amax, w_new_amax, x_fp8, w_fp8
-  return x_fp8.dot(w_fp8.T, dtype=dtypes.float) * combined_scale, x_new_amax, w_new_amax, x_fp8, w_fp8
+    if can_use_asm_gemm(x_fp8, w.T): return asm_gemm(x_fp8, w.T, x_scale=x_scale, w_scale=w_inv_scale), x_new_amax, x_fp8, w
+  return x_fp8.dot(w.T, dtype=dtypes.float) * x_scale * w_inv_scale, x_new_amax, x_fp8, w
 
 def _rmsnorm_fwd(x_in:Tensor, eps:float) -> tuple[Tensor, Tensor]:
   x = x_in.float()
@@ -105,10 +104,12 @@ class FlatTransformer:
     self.n_rep = self.n_heads // self.n_kv_heads
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
+    self.hidden_dim = hidden_dim
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
     self.fsdp=False
 
     # Attention
+    self._init_inv_scales = []  # populated by lin_per_layer when FP8
     self.wqkv = self.lin_per_layer(dim, wqkv_dim:=(self.n_heads * self.head_dim + self.n_kv_heads * self.head_dim * 2))
     self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim, std=scaled_std)
 
@@ -117,9 +118,8 @@ class FlatTransformer:
       self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, wo_dim, lora_rank)
 
     # FeedForward
-    self.w1 = self.lin_per_layer(dim, hidden_dim)
+    self.w13 = self.lin_per_layer(dim, hidden_dim * 2)
     self.w2 = self.lin_per_layer(hidden_dim, dim, std=scaled_std)
-    self.w3 = self.lin_per_layer(dim, hidden_dim)
 
     self.norm_eps = norm_eps
     self.attention_norm = Tensor.ones(n_layers, dim).contiguous()
@@ -134,34 +134,20 @@ class FlatTransformer:
 
     if FP8:
       def _amax(): return Tensor.full((), FP8_MAX).contiguous().requires_grad_(False)
-      names = ["xqkv", "wqkv", "xo", "wo", "x1", "w1", "x2", "w2", "x3", "w3"]
-      # _fp8_amax[name][layer_idx] = scalar amax tensor
+      names = ["xqkv", "xo", "x13", "x2"]
       self._fp8_amax = {name: [_amax() for _ in range(n_layers)] for name in names}
-      self._fp8_amax["xout"] = [_amax()]
-      self._fp8_amax["wout"] = [_amax()]
+      # per-weight inv_scale: single (n_layers,) float32 tensor per weight (kernel reads float* pointers)
+      w_names = ["wqkv", "wo", "w13", "w2"]
+      self._fp8_inv_scale = {}
+      for wname, inv_scales in zip(w_names, self._init_inv_scales):
+        self._fp8_inv_scale[wname] = inv_scales.float().contiguous().requires_grad_(False)
+      del self._init_inv_scales
 
     if LAYER_BUFS:
       self.wqkv_lb = self.wqkv[0].empty_like()
       self.wo_lb = self.wo[0].empty_like()
-      self.w1_lb = self.w1[0].empty_like()
+      self.w13_lb = self.w13[0].empty_like()
       self.w2_lb = self.w2[0].empty_like()
-      self.w3_lb = self.w3[0].empty_like()
-
-  def quantize_base_weights(self):
-    for name in self.quantizeable_weight_names:
-      weight: Tensor = getattr(self, name)
-      assert weight.dtype is dtypes.bfloat16
-
-      weight_fp8, scale_fp8 = quantize_weight_fp8(weight)
-      weight.replace(weight_fp8).realize()
-      setattr(self, name+'_scale', scale_fp8.realize())
-
-  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
-    if zerod or getenv("ZEROS"): return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
-    if use_kaiming:
-      return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
-    else:
-      return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, **kwargs)
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
     kwargs = {'dtype': LORA_DTYPE} if (LORA_DTYPE:=getenv('LORA_DTYPE', '')) else {}
@@ -174,11 +160,23 @@ class FlatTransformer:
     out, *_ = matmul(out, lora_b)
     return out * self.lora_scale
 
+  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zerod:bool=False, use_kaiming:bool=False, **kwargs):
+    if zerod or getenv("ZEROS"): w = Tensor.zeros(self.n_layers, out_features, in_features)
+    else:
+      if use_kaiming:
+        w = Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
+      else:
+        w = Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, **kwargs)
+    if not FP8: return w
+    # per-layer scaled fp8 cast: fill the fp8 range for best precision
+    amax = w.abs().flatten(1).max(1).detach()
+    scale = FP8_MAX / (amax + 1e-8)
+    self._init_inv_scales.append((amax + 1e-8) / FP8_MAX)  # save for inv_scale init
+    return (w * scale.reshape(-1, 1, 1)).clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE)
   def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
-                amax_xqkv=None, amax_wqkv=None, amax_xo=None, amax_wo=None,
-                                lora_a:Tensor|None=None, lora_b: Tensor|None=None,
-                                lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None,
-                                wo_scale:Tensor|None=None, wqkv_scale:Tensor|None=None):
+                amax_xqkv=None, amax_xo=None, s_qkv=None, s_o=None,
+                lora_a:Tensor|None=None, lora_b: Tensor|None=None,
+                lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None,):
     bsz, seqlen, _ = x.shape
     new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
 
@@ -186,10 +184,10 @@ class FlatTransformer:
     saves.extend([x, rrms])
     x = x * attention_norm
 
-    xqkv, *ret = matmul(x, wqkv, amax_x=amax_xqkv, amax_w=amax_wqkv, w_scale=wqkv_scale)
+    xqkv, *ret = matmul(x, wqkv, amax_x=amax_xqkv, w_inv_scale=s_qkv)
     if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
-    new_amaxs.extend(ret[:2])
-    saves.extend(ret[2:] + [xqkv])
+    new_amaxs.extend(ret[:1])
+    saves.extend(ret[1:] + [xqkv])
     xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
     xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
     xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
@@ -210,53 +208,55 @@ class FlatTransformer:
       attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True)
     attn = attn.transpose(1, 2).reshape(bsz, seqlen, -1)
 
-    out, *ret = matmul(attn, wo, amax_x=amax_xo, amax_w=amax_wo, w_scale=wo_scale)
+    out, *ret = matmul(attn, wo, amax_x=amax_xo, w_inv_scale=s_o)
     if LORA: out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
-    new_amaxs.extend(ret[:2])
-    saves.extend(ret[2:] + [out])
+    new_amaxs.extend(ret[:1])
+    saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
-  def feed_forward(self, x:Tensor, ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
-                   amax_x1=None, amax_w1=None, amax_x2=None, amax_w2=None, amax_x3=None, amax_w3=None,
-                   w1_scale:Tensor|None=None, w2_scale:Tensor|None=None, w3_scale:Tensor|None=None):
+  def feed_forward(self, x:Tensor, ffn_norm:Tensor, w13:Tensor, w2:Tensor,
+                   amax_x13=None, amax_x2=None, s_13=None, s_2=None):
     new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])
     x = x * ffn_norm
 
-    x_w1, *ret = matmul(x, w1, amax_x=amax_x1, amax_w=amax_w1, w_scale=w1_scale)
-    new_amaxs.extend(ret[:2])
-    saves.extend(ret[2:] + [x_w1])
-    x_w3, *ret = matmul(x.contiguous_backward(), w3, amax_x=amax_x3, amax_w=amax_w3, w_scale=w3_scale)
-    new_amaxs.extend(ret[:2])
-    saves.extend(ret[2:] + [x_w3])
-    out, *ret = matmul(x_w1.silu() * x_w3, w2, amax_x=amax_x2, amax_w=amax_w2, w_scale=w2_scale)
-    new_amaxs.extend(ret[:2])
-    saves.extend(ret[2:] + [out])
+    x_w13, *ret = matmul(x, w13, amax_x=amax_x13, w_inv_scale=s_13)
+    new_amaxs.extend(ret[:1])
+    saves.extend(ret[1:] + [x_w13])
+
+    if FP8 and getenv("FUSED_SILU_W13", 1):
+      from extra.amax.cast_amax import fused_quantize_fp8_w13
+      amax_s = amax_x2 if amax_x2 is not None else Tensor.full((), 1.0, dtype=dtypes.bfloat16, device=x_w13.device)
+      x2_fp8, x2_inv_scale, new_amax_x2 = fused_quantize_fp8_w13(x_w13, amax_s, FP8_DTYPE)
+      out, *ret = matmul(None, w2, w_inv_scale=s_2, x_fp8=x2_fp8, x_scale=x2_inv_scale, x_new_amax=new_amax_x2)
+    else:
+      x_w1, x_w3 = x_w13[..., :self.hidden_dim], x_w13[..., self.hidden_dim:]
+      out, *ret = matmul(x_w1.silu() * x_w3, w2, amax_x=amax_x2, w_inv_scale=s_2)
+    new_amaxs.extend(ret[:1])
+    saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
   @function(precompile=True, precompile_backward=True, allow_implicit=HK_FLASH_ATTENTION and Device.DEFAULT.startswith('CUDA'))
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
                 attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
-                ffn_norm:Tensor, w1:Tensor, w2:Tensor, w3:Tensor,
-                amax_xqkv=None, amax_wqkv=None, amax_xo=None, amax_wo=None,
-                amax_x1=None, amax_w1=None, amax_x2=None, amax_w2=None, amax_x3=None, amax_w3=None,
-                lora_a: Tensor|None=None, lora_b:Tensor|None=None, lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None,
-                w1_scale:Tensor|None=None, w2_scale:Tensor|None=None, w3_scale:Tensor|None=None,
-                wo_scale:Tensor|None=None, wqkv_scale:Tensor|None=None):
+                ffn_norm:Tensor, w13:Tensor, w2:Tensor,
+                amax_xqkv=None, amax_xo=None,
+                amax_x13=None, amax_x2=None,
+                s_qkv=None, s_o=None, s_13=None, s_2=None,
+                lora_a: Tensor|None=None, lora_b:Tensor|None=None,
+                lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
     attn, *attn_ret = self.attention(x, freqs_cis, attention_norm, wqkv, wo,
-                                     amax_xqkv=amax_xqkv, amax_wqkv=amax_wqkv, amax_xo=amax_xo, amax_wo=amax_wo,
+                                     amax_xqkv=amax_xqkv, amax_xo=amax_xo,
                                      lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo,
-                                     wo_scale=wo_scale, wqkv_scale=wqkv_scale)
-    attn_amax_count = 4 if FP8 else 0
-    attn_amaxs, attn_saves = attn_ret[:attn_amax_count], attn_ret[attn_amax_count:]
+                                     s_qkv=s_qkv, s_o=s_o)
+    attn_amaxs, attn_saves = attn_ret[:2], attn_ret[2:]
     h = x + attn
-    ffn, *ffn_ret = self.feed_forward(h, ffn_norm, w1, w2, w3,
-                                      amax_x1=amax_x1, amax_w1=amax_w1, amax_x2=amax_x2, amax_w2=amax_w2, amax_x3=amax_x3, amax_w3=amax_w3,
-                                      w1_scale=w1_scale, w2_scale=w2_scale, w3_scale=w3_scale)
-    ffn_amax_count = 6 if FP8 else 0
-    ffn_amaxs, ffn_saves = ffn_ret[:ffn_amax_count], ffn_ret[ffn_amax_count:]
+    ffn, *ffn_ret = self.feed_forward(h, ffn_norm, w13, w2,
+                                      amax_x13=amax_x13, amax_x2=amax_x2,
+                                      s_13=s_13, s_2=s_2)
+    ffn_amaxs, ffn_saves = ffn_ret[:2], ffn_ret[2:]
     h = h + ffn
     return (h, *attn_amaxs, *ffn_amaxs, *attn_saves, *ffn_saves)
 
@@ -280,9 +280,8 @@ class FlatTransformer:
         self.lora_a_wo.shard_(device, axis=2).realize()
         self.lora_b_wo.shard_(device, axis=None).realize()
       self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
-      self.w1.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
+      self.w13.shard_(device, axis=1).realize()             # (n_layers, hidden*2, dim) shard out
       self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
-      self.w3.shard_(device, axis=1).realize()             # (n_layers, hidden, dim) shard out
       self.attention_norm.shard_(device, axis=None).realize()
       self.ffn_norm.shard_(device, axis=None).realize()
       self.norm.weight.shard_(device, axis=None).realize()
@@ -293,34 +292,34 @@ class FlatTransformer:
         for name in self._fp8_amax:
           for i in range(len(self._fp8_amax[name])):
             self._fp8_amax[name][i] = self._fp8_amax[name][i].to(device).contiguous().requires_grad_(False)
+        for name in self._fp8_inv_scale:
+          self._fp8_inv_scale[name] = self._fp8_inv_scale[name].to(device).contiguous().requires_grad_(False)
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
     a = self._fp8_amax if FP8 else None
+    s = self._fp8_inv_scale if FP8 else None
     for i in range(self.n_layers):
-      amax_layer = {"amax_xqkv": a["xqkv"][i], "amax_wqkv": a["wqkv"][i],
-                    "amax_xo": a["xo"][i], "amax_wo": a["wo"][i],
-                    "amax_x1": a["x1"][i], "amax_w1": a["w1"][i],
-                    "amax_x2": a["x2"][i], "amax_w2": a["w2"][i],
-                    "amax_x3": a["x3"][i], "amax_w3": a["w3"][i]} if a else {}
-      lora_kwargs = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
-      prequantize_kwargs = {f"{name}_scale": getattr(self,f"{name}_scale")[i] for name in self.quantizeable_weight_names} if PRE_QUANTIZE else {}
-      wqkv, wo, w1, w2, w3 = self.wqkv[i], self.wo[i], self.w1[i], self.w2[i], self.w3[i]
+      amax_layer = {"amax_xqkv": a["xqkv"][i], "amax_xo": a["xo"][i],
+                    "amax_x13": a["x13"][i], "amax_x2": a["x2"][i]} if a else {}
+      scale_layer = {"s_qkv": s["wqkv"][i], "s_o": s["wo"][i],
+                     "s_13": s["w13"][i], "s_2": s["w2"][i]} if s else {}
+      lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       if self.fsdp:
-        wqkv, wo, w1, w2, w3 = allgather(self.wqkv[i]), allgather(self.wo[i]), allgather(self.w1[i]), allgather(self.w2[i]), allgather(self.w3[i])
+        wqkv, wo, w13, w2 = allgather(self.wqkv[i]), allgather(self.wo[i]), allgather(self.w13[i]), allgather(self.w2[i])
       if LAYER_BUFS:
         wqkv = self.wqkv_lb.assign(wqkv).realize()
         wo = self.wo_lb.assign(wo).realize()
-        w1 = self.w1_lb.assign(w1).realize()
+        w13 = self.w13_lb.assign(w13).realize()
         w2 = self.w2_lb.assign(w2).realize()
-        w3 = self.w3_lb.assign(w3).realize()
-      h, *ret = self.run_layer(h, freqs_cis, self.attention_norm[i],
-                               wqkv, wo, self.ffn_norm[i], w1, w2, w3,
-                               **amax_layer, **lora_kwargs, **prequantize_kwargs)
+      h, *ret = self.run_layer(h, freqs_cis,
+                               self.attention_norm[i], self.wqkv[i], self.wo[i],
+                               self.ffn_norm[i], self.w13[i], self.w2[i],
+                               **amax_layer, **scale_layer, **lora_layer)
       if a:
-        amaxs = ret[:10]
-        amax_names = ["xqkv", "wqkv", "xo", "wo", "x1", "w1", "x3", "w3", "x2", "w2"]
+        amaxs = ret[:5]
+        amax_names = ["xqkv", "xo", "x13", "x2"]
         for name, new_val in zip(amax_names, amaxs):
           a[name][i].assign(new_val)
 

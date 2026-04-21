@@ -1,10 +1,11 @@
 import os, time, struct, functools, unittest
+from dataclasses import replace
 from typing import Any, Callable
 import numpy as np
 from tinygrad import Tensor, dtypes, Device
 from tinygrad.uop.ops import UOp, Ops, KernelInfo
 from tinygrad.tensor import _to_np_dtype
-from tinygrad.engine.realize import Runner, get_program
+from tinygrad.engine.realize import get_program
 from tinygrad.dtype import DType
 from tinygrad.nn.state import get_parameters
 from tinygrad.helpers import T, CI, Target
@@ -23,23 +24,36 @@ def get_uops(sink:UOp, ren:Renderer|None=None) -> list[UOp]:
   full_sink = full_rewrite_to_sink(sink, ren, optimize=sink.tag is None)
   return line_rewrite(linearize(full_sink), pm_linearize_cleanups)
 
+def replace_opts(ast:UOp, opts:list) -> UOp: return ast.replace(arg=replace(ast.arg, opts_to_apply=tuple(opts)))
+
 def derandomize_model(model):
   for p in get_parameters(model):
     p.replace(Tensor.empty(p.shape, device=p.device, dtype=p.dtype))
     p.realize()
 
+def call_is_graph(call:UOp) -> bool:
+  ast = call.src[0]
+  return ast.op is Ops.CUSTOM_FUNCTION and ast.arg == "graph"
+
+def jit_cache_count(linear:UOp) -> int:
+  n = 0
+  for call in linear.src:
+    ast = call.src[0]
+    if ast.op is Ops.CUSTOM_FUNCTION and ast.arg == "graph": n += jit_cache_count(ast.src[0])
+    else: n += 1
+  return n
+
 def assert_jit_cache_len(fxn, expected_len):
-  if not fxn.jit_cache:
+  linear = fxn.captured.linear if fxn.captured is not None else None
+  if linear is None or not linear.src:
     assert expected_len == 0, expected_len
     return
-  # until we have a better way of typing the prg in ExecItem
-  if issubclass(type(fxn.jit_cache[0].prg), Runner) and not type(fxn.jit_cache[0].prg).__name__.endswith('Graph'):
-    assert len(fxn.jit_cache) == expected_len, f"expected {expected_len}, got {len(fxn.jit_cache)}"
+  if call_is_graph(linear.src[0]):
+    assert len(linear.src) == 1, len(linear.src)
+    inner = linear.src[0].src[0].src[0]  # LINEAR UOp inside CUSTOM_FUNCTION
+    assert len(inner.src) == expected_len, f"expected {expected_len}, got {len(inner.src)}"
   else:
-    assert len(fxn.jit_cache) == 1, len(fxn.jit_cache)
-    # until we have a better way of typing the prg in ExecItem
-    assert type(fxn.jit_cache[0].prg).__name__.endswith('Graph')
-    assert len(fxn.jit_cache[0].prg.jit_cache) == expected_len, f"expected {expected_len}, got {len(fxn.jit_cache[0].prg.jit_cache)}"
+    assert len(linear.src) == expected_len, f"expected {expected_len}, got {len(linear.src)}"
 
 def rand_for_dtype(dt:DType, size:int, allow_subnormal=True):
   if dtypes.is_unsigned(dt):
