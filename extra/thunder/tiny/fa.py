@@ -96,11 +96,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
         # apply attention mask
         if is_causal:
-          bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
-          q_base = q_seq * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
-          kv_base = kv_idx * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
+          bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
           att_block = warp.map(att_block,
-            lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+            lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
+                            (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
+                           .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -216,11 +216,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
         # apply attention mask
         if is_causal:
-          bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
-          q_base = q_seq * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
-          kv_base = kv_idx * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
+          bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
           att_block = warp.map(att_block,
-            lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+            lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
+                            (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
+                           .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -319,11 +319,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
           # apply attention mask
           if is_causal:
-            bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
-            q_base = q_idx * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
-            kv_base = kv_seq * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
+            bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
             att_block = warp.map(att_block,
-              lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+              lambda x, idx: ((kv_seq * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
+                              (q_idx * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
+                             .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
           elif mask is not None:
             mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_idx, kv_seq), axis=2)
             mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
