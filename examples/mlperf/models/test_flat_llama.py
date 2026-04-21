@@ -5,7 +5,7 @@ import numpy as np
 from tinygrad import Tensor, nn, dtypes
 from tinygrad.nn.state import get_parameters
 from tinygrad.device import is_dtype_supported, Device
-from extra.models.llama import Transformer
+from examples.mlperf.models.llama import Transformer
 from examples.mlperf.models.flat_llama import FlatTransformer
 
 def copy_weights(flat:FlatTransformer, ref:Transformer):
@@ -13,16 +13,14 @@ def copy_weights(flat:FlatTransformer, ref:Transformer):
   Tensor.realize(*nn.state.get_state_dict(ref).values())
   flat.wqkv.assign(Tensor(np.stack([ref.layers[i].attention.wqkv.weight.numpy() for i in range(n_layers)])))
   flat.wo.assign(Tensor(np.stack([ref.layers[i].attention.wo.weight.numpy() for i in range(n_layers)])))
-  flat.w13.assign(Tensor(np.stack([
-    np.concatenate((ref.layers[i].feed_forward.w1.weight.numpy(), ref.layers[i].feed_forward.w3.weight.numpy()), axis=0)
-    for i in range(n_layers)
-  ])))
+  flat.w1.assign(Tensor(np.stack([ref.layers[i].feed_forward.w1.weight.numpy() for i in range(n_layers)])))
   flat.w2.assign(Tensor(np.stack([ref.layers[i].feed_forward.w2.weight.numpy() for i in range(n_layers)])))
+  flat.w3.assign(Tensor(np.stack([ref.layers[i].feed_forward.w3.weight.numpy() for i in range(n_layers)])))
   flat.attention_norm.assign(Tensor(np.stack([ref.layers[i].attention_norm.weight.numpy() for i in range(n_layers)])))
   flat.ffn_norm.assign(Tensor(np.stack([ref.layers[i].ffn_norm.weight.numpy() for i in range(n_layers)])))
   flat.norm.weight.assign(Tensor(ref.norm.weight.numpy()))
   flat.tok_embeddings.weight.assign(Tensor(ref.tok_embeddings.weight.numpy()))
-  flat.output.assign(Tensor(ref.output.weight.numpy()))
+  flat.output.weight.assign(Tensor(ref.output.weight.numpy()))
 
 class TestFlatLlama(unittest.TestCase):
   def test_forward_match(self):
