@@ -1442,7 +1442,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
     # they are combined now
-    state_dict["w13"] = state_dict["w1"].to('CPU').cat(state_dict["w3"].to('CPU'), dim=1)
+    state_dict["w13"] = state_dict.pop("w1").to('CPU').cat(state_dict.pop("w3").to('CPU'), dim=1)
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys()) - {'w1','w3'}), f"unused weights in state_dict: {sorted(unused)}"
 
