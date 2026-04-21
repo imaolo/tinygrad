@@ -303,16 +303,9 @@ class Group:
   def row_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
     vec, src = cast(UOp, vec), cast(UOp, src)
     assert self.warps == 1
-    rv, rt = cast(RV, vec), cast(RT, src)
-    vec_u, src_u = rv._uop, rt._uop
-    assert rv.layout == VecLayout.ORTHO, "only ortho layout supported"
-    reduction_dim = rv.base_shape.rows
-    assert rt.base_shape.rows == reduction_dim, f"row_reduce expects {rt.base_shape.rows=} to match {reduction_dim=}"
 
     red_local = self.ker.alloc((self.group_threads,), src.dtype.base, AddrSpace.LOCAL)
     red_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
-    total_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
-    lane_elem = self.laneid % reduction_dim
 
     for height in self.ker.range(src.shape[-3], track=False):
       i = self.ker.raw_range(prod(red_reg.shape))
@@ -322,29 +315,20 @@ class Group:
 
       for width in self.ker.range(src.shape[-2], axis_type=AxisType.REDUCE, track=False):
         for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
-          row, _ = self._rt_coords(rt, self.laneid, inner)
-          src_val = src_u[height, width, inner]
-          candidate = op(red_reg[0], src_val)
-          next_val = row.eq(lane_elem).where(candidate, red_reg[0])
-          reg_store = red_reg[0].store(next_val).end(width, inner)
+          reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(width, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-      red_local = red_local.after(height, *[tkr._rng for tkr in self.ker.range_stack])
-      red_local_store = red_local[self.laneid].store(red_reg[0]).barrier()
-      red_local = red_local.after(red_local_store).reshape(red_local.shape)
+      red_local_store = red_local[self.laneid].store(red_reg[0])
+      red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      total_reg = total_reg.after(height, *[tkr._rng for tkr in self.ker.range_stack])
-      i = self.ker.raw_range(prod(total_reg.shape))
-      reg_store = total_reg.flatten()[i].store(init_value).end(i)
-      total_reg = total_reg.after(reg_store).reshape(total_reg.shape)
+      # reduce across the remaining 16-lane fragments in the warp.
+      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
+      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
+        offset = (self.laneid + (1 + inner) * 16) % self.group_threads
+        reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
+        red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-      for lane in self.ker.range(self.group_threads, axis_type=AxisType.REDUCE, track=False):
-        candidate = op(total_reg[0], red_local[lane])
-        next_val = (lane % reduction_dim).eq(lane_elem).where(candidate, total_reg[0])
-        reg_store = total_reg[0].store(next_val).end(lane)
-        total_reg = total_reg.after(reg_store).reshape(total_reg.shape)
-
-      vec_store = vec_u[height, 0].store(op(vec_u[height, 0], total_reg[0])).end(height)
+      vec_store = vec[height, 0].store(op(vec[height, 0], red_reg[0])).end(height)
 
     self.ker.push_store(vec_store, vec)
     return vec.after(vec_store).reshape(vec.shape)
@@ -352,16 +336,9 @@ class Group:
   def col_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
     vec, src = cast(UOp, vec), cast(UOp, src)
     assert self.warps == 1
-    rv, rt = cast(RV, vec), cast(RT, src)
-    vec_u, src_u = rv._uop, rt._uop
-    assert rv.layout == VecLayout.ORTHO, "only ortho layout supported"
-    reduction_dim = rv.base_shape.rows
-    assert rt.base_shape.cols == reduction_dim, f"col_reduce expects {rt.base_shape.cols=} to match {reduction_dim=}"
 
     red_local = self.ker.alloc((self.group_threads,), src.dtype.base, AddrSpace.LOCAL)
     red_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
-    total_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
-    lane_elem = self.laneid % reduction_dim
 
     for width in self.ker.range(src.shape[-2], track=False):
       i = self.ker.raw_range(prod(red_reg.shape))
@@ -371,29 +348,20 @@ class Group:
 
       for height in self.ker.range(src.shape[-3], axis_type=AxisType.REDUCE, track=False):
         for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
-          _, col = self._rt_coords(rt, self.laneid, inner)
-          src_val = src_u[height, width, inner]
-          candidate = op(red_reg[0], src_val)
-          next_val = col.eq(lane_elem).where(candidate, red_reg[0])
-          reg_store = red_reg[0].store(next_val).end(height, inner)
+          reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(height, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-      red_local = red_local.after(width, *[tkr._rng for tkr in self.ker.range_stack])
-      red_local_store = red_local[self.laneid].store(red_reg[0]).barrier()
-      red_local = red_local.after(red_local_store).reshape(red_local.shape)
+      red_local_store = red_local[self.laneid].store(red_reg[0])
+      red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      total_reg = total_reg.after(width, *[tkr._rng for tkr in self.ker.range_stack])
-      i = self.ker.raw_range(prod(total_reg.shape))
-      reg_store = total_reg.flatten()[i].store(init_value).end(i)
-      total_reg = total_reg.after(reg_store).reshape(total_reg.shape)
+      # reduce across the remaining 16-lane fragments in the warp.
+      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
+      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
+        offset = (self.laneid + (1 + inner) * 16) % self.group_threads
+        reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
+        red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-      for lane in self.ker.range(self.group_threads, axis_type=AxisType.REDUCE, track=False):
-        candidate = op(total_reg[0], red_local[lane])
-        next_val = (lane % reduction_dim).eq(lane_elem).where(candidate, total_reg[0])
-        reg_store = total_reg[0].store(next_val).end(lane)
-        total_reg = total_reg.after(reg_store).reshape(total_reg.shape)
-
-      vec_store = vec_u[width, 0].store(op(vec_u[width, 0], total_reg[0])).end(width)
+      vec_store = vec[width, 0].store(op(vec[width, 0], red_reg[0])).end(width)
 
     self.ker.push_store(vec_store, vec)
     return vec.after(vec_store).reshape(vec.shape)
