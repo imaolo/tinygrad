@@ -274,11 +274,6 @@ class FlatTransformer:
     else:
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
-      if LORA:
-        self.lora_a.shard_(device, axis=None).realize()
-        self.lora_b.shard_(device, axis=1).realize()
-        self.lora_a_wo.shard_(device, axis=2).realize()
-        self.lora_b_wo.shard_(device, axis=None).realize()
       self.wo.shard_(device, axis=2).realize()             # (n_layers, dim, in) shard in
       self.w13.shard_(device, axis=1).realize()             # (n_layers, hidden*2, dim) shard out
       self.w2.shard_(device, axis=2).realize()             # (n_layers, dim, hidden) shard in
@@ -294,6 +289,11 @@ class FlatTransformer:
             self._fp8_amax[name][i] = self._fp8_amax[name][i].to(device).contiguous().requires_grad_(False)
         for name in self._fp8_inv_scale:
           self._fp8_inv_scale[name] = self._fp8_inv_scale[name].to(device).contiguous().requires_grad_(False)
+      if LORA:
+        self.lora_a.shard_(device, axis=None).realize()
+        self.lora_b.shard_(device, axis=1).realize()
+        self.lora_a_wo.shard_(device, axis=2).realize()
+        self.lora_b_wo.shard_(device, axis=None).realize()
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
