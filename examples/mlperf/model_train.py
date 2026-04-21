@@ -1449,9 +1449,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   
   print("model setup peak mem per device(1): " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
-  if PRE_QUANTIZE:
-    model.quantize_base_weights()
-
   for param in params:
     param.realize()
 
