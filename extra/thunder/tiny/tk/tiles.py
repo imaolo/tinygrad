@@ -4,6 +4,7 @@ from typing import Callable
 from dataclasses import dataclass
 from tinygrad.dtype import AddrSpace, DType
 from tinygrad.device import Device
+from tinygrad.helpers import DEV
 from tinygrad.mixin import ElementwiseMixin
 from tinygrad.uop.ops import UOp, Ops
 
@@ -14,6 +15,11 @@ def unwrap(x):
   if isinstance(x, (list, tuple)): return type(x)(unwrap(y) for y in x)
   if isinstance(x, dict): return {k: unwrap(v) for k,v in x.items()}
   return x
+
+def is_cuda_like():
+  if Device.DEFAULT.startswith("CUDA"): return True
+  target = DEV.target(Device.DEFAULT)
+  return target.device == "PYTHON" and target.arch.startswith("sm_")
 
 def wrap(x, s):
   if isinstance(x, UOp): return s.ruop(x)
@@ -63,13 +69,12 @@ class TileMathMixin(ElementwiseMixin):
   def alu(self, op, *src, inner_op=lambda x:x):
     assert isinstance(self, (RT, RV))
     def rv_component(rt:RT, rv:RV, idx):
-      outer = idx[0 if rt.layout == TileLayout.ROW else 1]
-      rv_u = rv._uop[outer, 0]
-      if rv.shape[-1] == 1: return rv_u
+      rv_u = rv._uop[idx[0 if rt.layout == TileLayout.ROW else 1], 0]
+      if rv_u.dtype.count == 1: return rv_u
       row, col = rt.ker.warp._rt_coords(rt, rt.ker.laneid, idx[2])
       half = rt.base_shape.rows//2 if rt.layout == TileLayout.ROW else rt.base_shape.cols//2
       sel = row < half if rt.layout == TileLayout.ROW else col < half
-      return sel.where(rv_u, rv._uop[outer, 1])
+      return sel.where(rv_u.gep(0), rv_u.gep(1))
     if len(src) == 0:
       if self._uop._shape is None: uop = UOp.alu(self._uop, op)
       else: uop = self.ker.warp.map(self._uop, lambda x: UOp.alu(x, op))
@@ -271,12 +276,13 @@ class RV(TileMathMixin):
   @classmethod
   def create(cls, length, dtype:DType, layout:VecLayout, base_shape:RTBaseShape, ker):
     tiles = length // base_shape.rows
-    cuda_like = Device.DEFAULT.startswith("CUDA") or Device.DEFAULT.startswith("PYTHON::sm_")
+    cuda_like = is_cuda_like()
 
     match layout:
       case VecLayout.ORTHO:
-        inner_dim = 2 if cuda_like else 1
+        inner_dim = 1
         outer_dim = tiles
+        if cuda_like: dtype = dtype.vec(2)
 
     uop = ker.alloc((outer_dim, inner_dim), dtype, AddrSpace.REG)
     return RV(uop, length, layout, base_shape, ker)

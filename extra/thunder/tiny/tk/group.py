@@ -4,7 +4,7 @@ from tinygrad import dtypes
 from tinygrad.device import Device
 from tinygrad.uop.ops import AxisType, UOp, Ops
 from tinygrad.dtype import AddrSpace, PtrDType
-from tinygrad.helpers import prod
+from tinygrad.helpers import DEV, prod
 
 from extra.thunder.tiny.tk import WARP_THREADS
 from extra.thunder.tiny.tk.tiles import ALL_TILES, ST, RT, RV, TileLayout, VecLayout
@@ -29,7 +29,10 @@ class Group:
   def groupid(self): return self.ker.threadIdx_x // self.group_threads
 
   @property
-  def is_cuda(self): return Device.DEFAULT.startswith("CUDA") or Device.DEFAULT.startswith("PYTHON::sm_")
+  def is_cuda(self):
+    if Device.DEFAULT.startswith("CUDA"): return True
+    target = DEV.target(Device.DEFAULT)
+    return target.device == "PYTHON" and target.arch.startswith("sm_")
 
   def _rt_coords(self, rt:RT, laneid:UOp, inner:UOp) -> tuple[UOp, UOp]:
     # CUDA WMMA fragments use a different per-lane packing than AMD wave64.
@@ -84,8 +87,8 @@ class Group:
     assert self.warps == 1
 
     rngs_for_shape = tuple(self.ker.raw_range(dim) for dim in reg.shape)
-
-    reg_store = reg[*rngs_for_shape].store(value).end(*rngs_for_shape)
+    reg_idx = reg[*rngs_for_shape]
+    reg_store = reg_idx.store(reg_idx.ufix(value)).end(*rngs_for_shape)
 
     self.ker.push_store(reg_store, reg)
     return reg.after(reg_store).reshape(reg.shape)
@@ -301,13 +304,14 @@ class Group:
     return a.after(a_store).reshape(a.shape)
 
   def row_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
-    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.shape[-1] == 2 and src.layout == TileLayout.ROW:
+    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.dtype.base.count == 2 and src.layout == TileLayout.ROW:
       assert self.warps == 1
-      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
-      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
       half = src.base_shape.rows // 2
+      row0, row1 = self.laneid // 4, self.laneid // 4 + half
       lane_group = (self.laneid // 4) * 4
       lane_inner = self.laneid % 4
+      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
+      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
 
       for height in self.ker.range(src.shape[-3], track=False):
         i = self.ker.raw_range(prod(red_reg.shape))
@@ -319,10 +323,10 @@ class Group:
           for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
             row, _ = self._rt_coords(src, self.laneid, inner)
             val = src[height, width, inner]
-            is_bottom = row >= half
+            is_row0, is_row1 = row.eq(row0), row.eq(row1)
             reg_store = UOp.group(
-              red_reg[0].store(is_bottom.where(red_reg[0], op(red_reg[0], val))),
-              red_reg[1].store(is_bottom.where(op(red_reg[1], val), red_reg[1])),
+              red_reg[0].store(is_row0.where(op(red_reg[0], val), red_reg[0])),
+              red_reg[1].store(is_row1.where(op(red_reg[1], val), red_reg[1])),
             ).end(width, inner)
             red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
@@ -340,10 +344,9 @@ class Group:
           ).end(inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-        vec_store = UOp.group(
-          vec[height, 0].store(op(vec[height, 0], red_reg[0])),
-          vec[height, 1].store(op(vec[height, 1], red_reg[1])),
-        ).end(height)
+        prev = vec[height, 0]
+        packed = UOp.vectorize(op(prev.gep(0), red_reg[0]), op(prev.gep(1), red_reg[1]))
+        vec_store = vec[height, 0].store(packed).end(height)
 
       self.ker.push_store(vec_store, cast(UOp, vec))
       return cast(RV, vec).after(vec_store).reshape(vec.shape)
@@ -381,13 +384,14 @@ class Group:
     return vec.after(vec_store).reshape(vec.shape)
 
   def col_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
-    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.shape[-1] == 2 and src.layout == TileLayout.COL:
+    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.dtype.base.count == 2 and src.layout == TileLayout.COL:
       assert self.warps == 1
-      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
-      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
       half = src.base_shape.cols // 2
+      col0, col1 = self.laneid // 4, self.laneid // 4 + half
       lane_group = (self.laneid // 4) * 4
       lane_inner = self.laneid % 4
+      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
+      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
 
       for width in self.ker.range(src.shape[-2], track=False):
         i = self.ker.raw_range(prod(red_reg.shape))
@@ -399,10 +403,10 @@ class Group:
           for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
             _, col = self._rt_coords(src, self.laneid, inner)
             val = src[height, width, inner]
-            is_right = col >= half
+            is_col0, is_col1 = col.eq(col0), col.eq(col1)
             reg_store = UOp.group(
-              red_reg[0].store(is_right.where(red_reg[0], op(red_reg[0], val))),
-              red_reg[1].store(is_right.where(op(red_reg[1], val), red_reg[1])),
+              red_reg[0].store(is_col0.where(op(red_reg[0], val), red_reg[0])),
+              red_reg[1].store(is_col1.where(op(red_reg[1], val), red_reg[1])),
             ).end(height, inner)
             red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
@@ -420,10 +424,9 @@ class Group:
           ).end(inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
-        vec_store = UOp.group(
-          vec[width, 0].store(op(vec[width, 0], red_reg[0])),
-          vec[width, 1].store(op(vec[width, 1], red_reg[1])),
-        ).end(width)
+        prev = vec[width, 0]
+        packed = UOp.vectorize(op(prev.gep(0), red_reg[0]), op(prev.gep(1), red_reg[1]))
+        vec_store = vec[width, 0].store(packed).end(width)
 
       self.ker.push_store(vec_store, cast(UOp, vec))
       return cast(RV, vec).after(vec_store).reshape(vec.shape)
@@ -520,10 +523,8 @@ class Group:
 
           srow, scol = cast(ST, dst).swizzle(row, col)
 
-          src_i += height * st.base_shape.rows * row_stride + width * st.base_shape.cols
-          src_i += row * row_stride + col
-
-          src_load = srcf[src_i]
+          load_idx = src_i + height * st.base_shape.rows * row_stride + width * st.base_shape.cols + row * row_stride + col
+          src_load = srcf[load_idx]
           if src.dtype.base != dst.dtype.base:
             src_load = src_load.cast(dst.dtype.base)
           dst_store = dst[*dst_idxs, height, width, srow, scol].store(src_load)
@@ -550,9 +551,8 @@ class Group:
 
             srow, scol = base_row + row, base_col + col
 
-            src_i += srow * row_stride + scol
-
-            src_load = srcf[src_i]
+            load_idx = src_i + srow * row_stride + scol
+            src_load = srcf[load_idx]
             if src.dtype.base != dst.dtype.base:
               src_load = src_load.cast(dst.dtype.base)
             dst_store = dst[*dst_idxs, height, width, inner].store(src_load).end(height, width, inner)
@@ -569,19 +569,14 @@ class Group:
       src_i = ((idxs[0] * src.shape[-3] + idxs[1]) * src.shape[-2] + idxs[2]) * src.shape[-1] + idxs[3]
 
       for outer in self.ker.range(dst.shape[-2], track=False):
-        if rv.shape[-1] == 2:
-          half = reductions // 2
+        if self.is_cuda and rv.dtype.base.count == 2:
           base = src_i + outer * reductions
-          lane_col = laneid // 4
-          src_load0 = srcf[base + lane_col]
-          src_load1 = srcf[base + half + lane_col]
-          if src.dtype.base != dst.dtype.base:
-            src_load0 = src_load0.cast(dst.dtype.base)
-            src_load1 = src_load1.cast(dst.dtype.base)
-          dst_store = UOp.group(
-            dst[outer, 0].store(src_load0),
-            dst[outer, 1].store(src_load1),
-          ).end(outer)
+          src_load0 = srcf[base + laneid // 4]
+          src_load1 = srcf[base + laneid // 4 + reductions // 2]
+          if src.dtype.base != dst.dtype.base.scalar():
+            src_load0 = src_load0.cast(dst.dtype.base.scalar())
+            src_load1 = src_load1.cast(dst.dtype.base.scalar())
+          dst_store = dst[outer, 0].store(UOp.vectorize(src_load0, src_load1)).end(outer)
         else:
           load_idx = src_i + outer * reductions + (laneid % reductions)
           src_load = srcf[load_idx]
@@ -637,12 +632,11 @@ class Group:
 
             srow, scol = base_row + row, base_col + col
 
-            dst_i += srow * row_stride + scol
-
             src_load = src[*src_idxs, height, width, inner]
             if src.dtype.base != dst.dtype.base:
               src_load = src_load.cast(dst.dtype.base)
-            dst_store = dstf[dst_i].store(src_load).end(height, width, inner)
+            store_idx = dst_i + srow * row_stride + scol
+            dst_store = dstf[store_idx].store(src_load).end(height, width, inner)
     elif src_dtype.addrspace == AddrSpace.REG and dst_dtype.addrspace == AddrSpace.GLOBAL and isinstance(src, RV):
       dstf = dst.flatten()
 
@@ -656,17 +650,16 @@ class Group:
       dst_i = ((idxs[0] * dst.shape[-3] + idxs[1]) * dst.shape[-2] + idxs[2]) * dst.shape[-1] + idxs[3]
 
       for outer in self.ker.range(src.shape[-2], track=False):
-        if rv.shape[-1] == 2:
-          half = reductions // 2
+        if self.is_cuda and rv.dtype.base.count == 2:
           base = dst_i + outer * reductions
-          lane_col = laneid // 4
-          src_load0, src_load1 = src[outer, 0], src[outer, 1]
-          if src.dtype.base != dst.dtype.base:
-            src_load0 = src_load0.cast(dst.dtype.base)
-            src_load1 = src_load1.cast(dst.dtype.base)
+          src_load = src[outer, 0]
+          left, right = src_load.gep(0), src_load.gep(1)
+          if src.dtype.base.scalar() != dst.dtype.base:
+            left = left.cast(dst.dtype.base)
+            right = right.cast(dst.dtype.base)
           dst_store = UOp.group(
-            dstf[base + lane_col].store(src_load0),
-            dstf[base + half + lane_col].store(src_load1),
+            dstf[base + laneid // 4].store(left),
+            dstf[base + laneid // 4 + reductions // 2].store(right),
           ).end(outer)
         else:
           store_idx = dst_i + outer * reductions + (laneid % reductions)
