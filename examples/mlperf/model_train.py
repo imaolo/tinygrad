@@ -1442,7 +1442,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     state_dict = {k:v for weight_file in weights_path.glob("*.safetensors") for k,v in safe_load(weight_file).items()}
     # they are combined now
-    state_dict["w13"] = state_dict["w1"].cat(state_dict["w3"], dim=1)
+    state_dict["w13"] = state_dict["w1"].to('CPU').cat(state_dict["w3"].to('CPU'), dim=1)
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
@@ -1486,7 +1486,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   fp8_inv_scales = list(model._fp8_inv_scale.values()) if FP8 else []
 
   if FP8:
-    from tinygrad.nn.state import get_state_dict
     model_state = get_state_dict(model)
     for wname in ["wqkv", "wo", "w13", "w2"]:
       w = model_state[wname]
