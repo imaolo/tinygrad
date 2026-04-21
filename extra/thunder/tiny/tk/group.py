@@ -272,7 +272,7 @@ class Group:
       red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
       for width in self.ker.range(src.shape[-2], axis_type=AxisType.REDUCE, track=False):
-        for inner in self.ker.range(4, axis_type=AxisType.REDUCE, track=False):
+        for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
           reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(width, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
@@ -307,7 +307,7 @@ class Group:
       red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
       for height in self.ker.range(src.shape[-3], axis_type=AxisType.REDUCE, track=False):
-        for inner in self.ker.range(4, axis_type=AxisType.REDUCE, track=False):
+        for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
           reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(height, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
