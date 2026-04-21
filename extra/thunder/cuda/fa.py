@@ -10,7 +10,12 @@ def flash_attention(xq:Tensor, xk:Tensor, xv:Tensor, attn_mask:Tensor|None=None,
   # Keep the CUDA API aligned with the AMD path for flat_llama imports.
   # The current native CUDA prototype in fa.cu is not shape-compatible with LLaMA-70B
   # training yet, so route through the tiny custom-kernel implementation for now.
-  out = _tiny_flash_attention(xq, xk, xv, attn_mask=attn_mask, is_causal=is_causal)
+  fa_xk, fa_xv = xk, xv
+  if getenv("DEBUG_FA_EXPAND_GQA", 0) and xq.shape[-3] != xk.shape[-3]:
+    group_size = xq.shape[-3] // xk.shape[-3]
+    fa_xk = xk.repeat_interleave(group_size, dim=-3)
+    fa_xv = xv.repeat_interleave(group_size, dim=-3)
+  out = _tiny_flash_attention(xq, fa_xk, fa_xv, attn_mask=attn_mask, is_causal=is_causal)
   if getenv("DEBUG_FA_COMPARE", 0):
     global _fa_compare_calls
     _fa_compare_calls += 1
@@ -21,6 +26,8 @@ def flash_attention(xq:Tensor, xk:Tensor, xv:Tensor, attn_mask:Tensor|None=None,
         diff = (out.float() - ref.float()).abs()
         msg = (f"[cuda fa compare #{_fa_compare_calls}] q={xq.shape} k={xk.shape} "
                f"mean_abs={diff.mean().item():.6f} max_abs={diff.max().item():.6f}")
+        if fa_xk is not xk:
+          msg += " expanded_gqa=1"
         if is_causal and xq.shape[-2] % 32 != 0:
           tail_blk = min(32, xq.shape[-2])
           tail = diff[..., -tail_blk:, :]
