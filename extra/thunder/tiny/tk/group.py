@@ -63,6 +63,20 @@ class Group:
     c_i = [c[i].store(out0.gep(i)) for i in range(4)] + [c[i+4].store(out1.gep(i)) for i in range(4)]
     return UOp.group(*c_i).end(height, width, inner)
 
+  def _cuda_prepare_accumulator(self, c:RT) -> tuple[RT, ST|None]:
+    if not self.is_cuda or c.layout == TileLayout.ROW: return c, None
+    rt_shape = (c.shape[-3] * c.base_shape.rows, c.shape[-2] * c.base_shape.cols)
+    acc_smem = self.ker.st(rt_shape, c.dtype.base)
+    acc_row = self.ker.rt(rt_shape, c.dtype.base, TileLayout.ROW, base_shape=c.base_shape)
+    acc_smem = self.store(acc_smem, c)
+    acc_row = self.load(acc_row, acc_smem)
+    return acc_row, acc_smem
+
+  def _cuda_restore_accumulator(self, dst:RT, src:RT, acc_smem:ST|None) -> RT:
+    if acc_smem is None: return src
+    acc_smem = self.store(acc_smem, src)
+    return self.load(dst, acc_smem)
+
   # ops that only work on a single warp
 
   def clear(self, reg:ALL_TILES, value:float=0):
@@ -111,18 +125,20 @@ class Group:
     return dst.after(dst_store).reshape(dst.shape)
 
   def mma_AB(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
+    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
     assert self.warps == 1
 
-    a_base_shape = cast(RT, a).base_shape
+    a_base_shape = a.base_shape
     if self.is_cuda:
       if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AB not implemented for {a_base_shape.cols=}")
-      for height in self.ker.range(c.shape[-3], track=False):
-        for width in self.ker.range(c.shape[-2], track=False):
+      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
+      for height in self.ker.range(c_acc.shape[-3], track=False):
+        for width in self.ker.range(c_acc.shape[-2], track=False):
           for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c[height, width], a[height, inner], b[inner, width], height, width, inner)
-      self.ker.push_store(c_store, c)
-      return c.after(c_store).reshape(c.shape)
+            c_store = self._cuda_wmma(c_acc[height, width], a[height, inner], b[inner, width], height, width, inner)
+      self.ker.push_store(c_store, c_acc)
+      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
+      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -149,18 +165,20 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_ABt(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
+    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
     assert self.warps == 1
 
-    a_base_shape = cast(RT, a).base_shape
+    a_base_shape = a.base_shape
     if self.is_cuda:
       if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_ABt not implemented for {a_base_shape.cols=}")
-      for height in self.ker.range(c.shape[-3], track=False):
-        for width in self.ker.range(c.shape[-2], track=False):
+      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
+      for height in self.ker.range(c_acc.shape[-3], track=False):
+        for width in self.ker.range(c_acc.shape[-2], track=False):
           for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c[height, width], a[height, inner], b[width, inner], height, width, inner)
-      self.ker.push_store(c_store, c)
-      return c.after(c_store).reshape(c.shape)
+            c_store = self._cuda_wmma(c_acc[height, width], a[height, inner], b[width, inner], height, width, inner)
+      self.ker.push_store(c_store, c_acc)
+      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
+      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -187,18 +205,20 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_AtB(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
+    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
     assert self.warps == 1
 
-    a_base_shape = cast(RT, a).base_shape
+    a_base_shape = a.base_shape
     if self.is_cuda:
       if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtB not implemented for {a_base_shape.cols=}")
-      for height in self.ker.range(c.shape[-3], track=False):
-        for width in self.ker.range(c.shape[-2], track=False):
+      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
+      for height in self.ker.range(c_acc.shape[-3], track=False):
+        for width in self.ker.range(c_acc.shape[-2], track=False):
           for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c[height, width], a[inner, height], b[inner, width], height, width, inner)
-      self.ker.push_store(c_store, c)
-      return c.after(c_store).reshape(c.shape)
+            c_store = self._cuda_wmma(c_acc[height, width], a[inner, height], b[inner, width], height, width, inner)
+      self.ker.push_store(c_store, c_acc)
+      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
+      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -225,18 +245,20 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_AtBt(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
+    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
     assert self.warps == 1
 
-    a_base_shape = cast(RT, a).base_shape
+    a_base_shape = a.base_shape
     if self.is_cuda:
       if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtBt not implemented for {a_base_shape.cols=}")
-      for height in self.ker.range(c.shape[-3], track=False):
-        for width in self.ker.range(c.shape[-2], track=False):
+      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
+      for height in self.ker.range(c_acc.shape[-3], track=False):
+        for width in self.ker.range(c_acc.shape[-2], track=False):
           for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c[height, width], a[inner, height], b[width, inner], height, width, inner)
-      self.ker.push_store(c_store, c)
-      return c.after(c_store).reshape(c.shape)
+            c_store = self._cuda_wmma(c_acc[height, width], a[inner, height], b[width, inner], height, width, inner)
+      self.ker.push_store(c_store, c_acc)
+      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
+      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
