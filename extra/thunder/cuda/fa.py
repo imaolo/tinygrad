@@ -1,15 +1,25 @@
 import pathlib
 from tinygrad import Device, Tensor
-from tinygrad.helpers import Context
+from tinygrad.helpers import Context, getenv
 from tinygrad.runtime.support.compiler_cuda import pretty_ptx, NVCCCompiler
 from extra.thunder.tiny.fa import flash_attention as _tiny_flash_attention
 
+_fa_compare_calls = 0
 
 def flash_attention(xq:Tensor, xk:Tensor, xv:Tensor, attn_mask:Tensor|None=None, is_causal:bool=False):
   # Keep the CUDA API aligned with the AMD path for flat_llama imports.
   # The current native CUDA prototype in fa.cu is not shape-compatible with LLaMA-70B
   # training yet, so route through the tiny custom-kernel implementation for now.
-  return (_tiny_flash_attention(xq, xk, xv, attn_mask=attn_mask, is_causal=is_causal),)
+  out = _tiny_flash_attention(xq, xk, xv, attn_mask=attn_mask, is_causal=is_causal)
+  if getenv("DEBUG_FA_COMPARE", 0):
+    global _fa_compare_calls
+    _fa_compare_calls += 1
+    ref = xq.scaled_dot_product_attention(xk, xv, attn_mask=attn_mask, is_causal=is_causal, enable_gqa=xq.shape[-3] != xk.shape[-3])
+    diff = (out.float() - ref.float()).abs()
+    print(f"[cuda fa compare #{_fa_compare_calls}] q={xq.shape} k={xk.shape} "
+          f"mean_abs={diff.mean().item():.6f} max_abs={diff.max().item():.6f}")
+    if getenv("DEBUG_FA_USE_REF", 0): out = ref.cast(out.dtype)
+  return (out,)
 
 if __name__ == "__main__":
   code = (pathlib.Path(__file__).parent / "fa.cu").read_text()
