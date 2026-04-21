@@ -92,7 +92,7 @@ def rmsnorm(x_in:Tensor, eps:float) -> tuple[Tensor, Tensor]:
 
 class FlatTransformer:
   quantizeable_weight_names = ("wqkv", "wo", "w1", "w2", "w3")
-  fsdp_weight_names = ("wqkv", "wo", "w1", "w2", "w3")
+  fsdp_weight_names = ("wqkv", "wo", "w13", "w2")
 
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
@@ -306,16 +306,17 @@ class FlatTransformer:
       scale_layer = {"s_qkv": s["wqkv"][i], "s_o": s["wo"][i],
                      "s_13": s["w13"][i], "s_2": s["w2"][i]} if s else {}
       lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
+      wqkv, wo, w13, w2 = self.wqkv[i], self.wo[i], self.w13[i], self.w2[i]
       if self.fsdp:
-        wqkv, wo, w13, w2 = allgather(self.wqkv[i]), allgather(self.wo[i]), allgather(self.w13[i]), allgather(self.w2[i])
+        wqkv, wo, w13, w2 = allgather(wqkv), allgather(wo), allgather(w13), allgather(w2)
       if LAYER_BUFS:
         wqkv = self.wqkv_lb.assign(wqkv).realize()
         wo = self.wo_lb.assign(wo).realize()
         w13 = self.w13_lb.assign(w13).realize()
         w2 = self.w2_lb.assign(w2).realize()
       h, *ret = self.run_layer(h, freqs_cis,
-                               self.attention_norm[i], self.wqkv[i], self.wo[i],
-                               self.ffn_norm[i], self.w13[i], self.w2[i],
+                               self.attention_norm[i], wqkv, wo,
+                               self.ffn_norm[i], w13, w2,
                                **amax_layer, **scale_layer, **lora_layer)
       if a:
         amaxs = ret[:5]
