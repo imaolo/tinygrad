@@ -28,7 +28,6 @@ PRE_QUANTIZE = getenv("PRE_QUANTIZE", 1)
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
-LAYER_BUFS = getenv('LAYER_BUFS', 0)
 HK_FLASH_ATTENTION = getenv("HK_FLASH_ATTENTION", 0)
 
 # per-device abs max without allreduce (matches TE delayed scaling behavior)
@@ -142,12 +141,6 @@ class FlatTransformer:
       for wname, inv_scales in zip(w_names, self._init_inv_scales):
         self._fp8_inv_scale[wname] = inv_scales.float().contiguous().requires_grad_(False)
       del self._init_inv_scales
-
-    if LAYER_BUFS:
-      self.wqkv_lb = self.wqkv[0].empty_like()
-      self.wo_lb = self.wo[0].empty_like()
-      self.w13_lb = self.w13[0].empty_like()
-      self.w2_lb = self.w2[0].empty_like()
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
     kwargs = {'dtype': LORA_DTYPE} if (LORA_DTYPE:=getenv('LORA_DTYPE', '')) else {}
@@ -308,18 +301,10 @@ class FlatTransformer:
       scale_layer = {"s_qkv": s["wqkv"][i], "s_o": s["wo"][i],
                      "s_13": s["w13"][i], "s_2": s["w2"][i]} if s else {}
       lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
-      wqkv, wo, w13, w2 = self.wqkv[i], self.wo[i], self.w13[i], self.w2[i]
-      if LAYER_BUFS:
-        wqkv = self.wqkv_lb.assign(wqkv)
-        wo = self.wo_lb.assign(wo)
-        w13 = self.w13_lb.assign(w13)
-        w2 = self.w2_lb.assign(w2)
       h, *ret = self.run_layer(h, freqs_cis,
-                               self.attention_norm[i], wqkv, wo,
-                               self.ffn_norm[i], w13, w2,
+                               self.attention_norm[i], self.wqkv[i], self.wo[i],
+                               self.ffn_norm[i], self.w13[i], self.w2[i],
                                **amax_layer, **scale_layer, **lora_layer)
-      if LAYER_BUFS:
-        h.realize()
       if a:
         amaxs = ret[:5]
         amax_names = ["xqkv", "xo", "x13", "x2"]
