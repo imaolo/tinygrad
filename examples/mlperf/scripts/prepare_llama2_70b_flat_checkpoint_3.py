@@ -8,6 +8,7 @@ os.environ["ZEROS"] = "1"
 
 from pathlib import Path
 
+import numpy as np
 from huggingface_hub import CommitOperationDelete, HfApi
 from tqdm import tqdm
 
@@ -39,27 +40,37 @@ def load_reference_state_dict() -> dict[str, Tensor]:
   return convert_from_huggingface(ref_state_dict, LLAMA2_70B_ARGS["n_layers"], LLAMA2_70B_ARGS["n_heads"], LLAMA2_70B_ARGS["n_kv_heads"])
 
 
+def tensor_from_numpy(arr:np.ndarray, like:Tensor) -> Tensor:
+  out = Tensor(arr)
+  return out.cast(like.dtype) if out.dtype != like.dtype else out
+
+
 def pop_stacked_layers(state_dict:dict[str, Tensor], key_fmt:str) -> Tensor:
   n_layers = LLAMA2_70B_ARGS["n_layers"]
-  return Tensor.stack([state_dict.pop(key_fmt.format(i=i)) for i in range(n_layers)])
+  layers = [state_dict.pop(key_fmt.format(i=i)) for i in range(n_layers)]
+  return tensor_from_numpy(np.stack([layer.numpy() for layer in layers]), layers[0])
 
 
 def build_flat_state_dict(ref_state_dict:dict[str, Tensor]) -> dict[str, Tensor]:
   rope_theta = LLAMA2_70B_ARGS.get("rope_theta", 10000)
+  norm_weight = ref_state_dict.pop("norm.weight")
+  output_weight = ref_state_dict.pop("output.weight")
+  tok_embeddings_weight = ref_state_dict.pop("tok_embeddings.weight")
   flat_state_dict = {
     "attention_norm": pop_stacked_layers(ref_state_dict, "layers.{i}.attention_norm.weight"),
     "ffn_norm": pop_stacked_layers(ref_state_dict, "layers.{i}.ffn_norm.weight"),
     "freqs_cis": precompute_freqs_cis(LLAMA2_70B_ARGS["dim"] // LLAMA2_70B_ARGS["n_heads"], MAX_CONTEXT * 2, rope_theta).contiguous().requires_grad_(False),
-    "norm.weight": ref_state_dict.pop("norm.weight"),
-    "output": ref_state_dict.pop("output.weight").unsqueeze(0),
-    "tok_embeddings.weight": ref_state_dict.pop("tok_embeddings.weight"),
+    "norm.weight": tensor_from_numpy(norm_weight.numpy(), norm_weight),
+    "output": tensor_from_numpy(np.expand_dims(output_weight.numpy(), axis=0), output_weight),
+    "tok_embeddings.weight": tensor_from_numpy(tok_embeddings_weight.numpy(), tok_embeddings_weight),
     "w1": pop_stacked_layers(ref_state_dict, "layers.{i}.feed_forward.w1.weight"),
     "w2": pop_stacked_layers(ref_state_dict, "layers.{i}.feed_forward.w2.weight"),
     "w3": pop_stacked_layers(ref_state_dict, "layers.{i}.feed_forward.w3.weight"),
     "wo": pop_stacked_layers(ref_state_dict, "layers.{i}.attention.wo.weight"),
     "wqkv": pop_stacked_layers(ref_state_dict, "layers.{i}.attention.wqkv.weight"),
   }
-  flat_state_dict["w13"] = flat_state_dict.pop("w1").cat(flat_state_dict.pop("w3"), dim=1).realize()
+  w1, w3 = flat_state_dict.pop("w1"), flat_state_dict.pop("w3")
+  flat_state_dict["w13"] = tensor_from_numpy(np.concatenate([w1.numpy(), w3.numpy()], axis=1), w1)
   if leftover := sorted(ref_state_dict.keys()):
     raise RuntimeError(f"unused weights after flattening: {leftover}")
   return flat_state_dict
