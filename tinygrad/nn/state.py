@@ -1,4 +1,4 @@
-import json, pathlib, zipfile, pickle, tarfile, struct, functools, io, zlib
+import atexit, json, pathlib, shutil, tempfile, zipfile, pickle, tarfile, struct, functools, io, zlib
 from collections import OrderedDict
 from typing import Any, Callable, BinaryIO, Iterable, cast
 from tinygrad.tensor import Tensor
@@ -123,6 +123,35 @@ def get_parameters(obj) -> list[Tensor]:
   """
   return list(get_state_dict(obj).values())
 
+###### AI SLOP
+# @functools.cache
+# def _fake_load_dir() -> pathlib.Path:
+#   p = pathlib.Path(tempfile.mkdtemp(prefix="tinygrad_fake_load_"))
+#   atexit.register(lambda: shutil.rmtree(p, ignore_errors=True))
+#   return p
+
+# def get_fake_state_dict(obj, tensor_filter:Callable[[str, Tensor], bool]|None=None) -> dict[str, Tensor]:
+#   """
+#   Returns a fake `state_dict` backed by sparse temporary DISK tensors with the same shapes and dtypes as `obj`.
+
+#   This exercises the normal disk-backed weight load path without requiring real checkpoint files.
+#   """
+#   return {
+#     k: Tensor.empty(*v.shape, dtype=v.dtype, device=f"disk:{_fake_load_dir() / f'{k.replace('/', '__')}.fake'}")
+#     for k, v in get_state_dict(obj).items()
+#     if tensor_filter is None or tensor_filter(k, v)
+#   }
+
+def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
+  if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
+  sz = t.shape[axis] // len(devices)
+  slices = []
+  for i, d in enumerate(devices):
+    bounds = tuple((0, s) if j != axis else (i*sz, (i+1)*sz) for j, s in enumerate(t.shape))
+    slices.append(t.shrink(bounds).to(d))
+  return Tensor(slices[0].uop.mstack(*[s.uop for s in slices[1:]]).multi(axis),
+                device=devices, dtype=t.dtype, requires_grad=t.requires_grad)
+
 def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True, to:bool=True) -> list[Tensor]:
   """
   Loads a `state_dict` into a model. Return the loaded Tensors.
@@ -156,6 +185,8 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
       if to:
         if isinstance(v.device, tuple):
           if isinstance(state_dict[k].device, tuple): v.replace(state_dict[k])
+          elif isinstance(state_dict[k].device, str) and state_dict[k].device.startswith(("DISK", "TINYFS")) and v.uop.axis is not None:
+            v.replace(_direct_disk_shard(state_dict[k], v.device, v.uop.axis))
           else: v.replace(state_dict[k].shard(v.device, v.uop.axis))
         else: v.replace(state_dict[k].to(v.device))
       else:
