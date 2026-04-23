@@ -3,7 +3,7 @@ from collections import OrderedDict
 from typing import Any, Callable, BinaryIO, Iterable, cast
 from tinygrad.tensor import Tensor
 from tinygrad.dtype import dtypes
-from tinygrad.helpers import prod, argsort, DEBUG, Timing, CI, GlobalCounters, tqdm, round_up, T, strides_for_shape
+from tinygrad.helpers import prod, argsort, DEBUG, Timing, CI, GlobalCounters, tqdm, round_up, T, strides_for_shape, getenv
 
 class TensorIO(io.RawIOBase, BinaryIO):
   def __init__(self, t: Tensor):
@@ -146,7 +146,10 @@ def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
   if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
   # Disk-backed tensors loaded from checkpoint files can have byte offsets that make direct
   # shrink/copy sharding incorrect. Stage once on CPU, then shard from a normal realized tensor.
-  return t.to("CPU").realize().shard(devices, axis)
+  if getenv("CPU_DISK_LOAD", 1):
+    return t.to("CPU").realize().shard(devices, axis)
+  else:
+    return t.shard(devices, axis)
 
 def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True, to:bool=True) -> list[Tensor]:
   """
