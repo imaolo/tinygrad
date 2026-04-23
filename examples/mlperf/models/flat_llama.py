@@ -247,6 +247,8 @@ class FlatTransformer:
                 s_qkv=None, s_o=None, s_13=None, s_2=None,
                 lora_a: Tensor|None=None, lora_b:Tensor|None=None,
                 lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
+    if self.fsdp:
+      wqkv, wo, w13, w2 = allgather(wqkv), allgather(wo), allgather(w13), allgather(w2)
     attn, *attn_ret = self.attention(x, freqs_cis, attention_norm, wqkv, wo,
                                      amax_xqkv=amax_xqkv, amax_xo=amax_xo,
                                      lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo,
@@ -307,8 +309,6 @@ class FlatTransformer:
                      "s_13": s["w13"][i], "s_2": s["w2"][i]} if s else {}
       lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       wqkv, wo, w13, w2 = self.wqkv[i], self.wo[i], self.w13[i], self.w2[i]
-      if self.fsdp:
-        wqkv, wo, w13, w2 = allgather(wqkv), allgather(wo), allgather(w13), allgather(w2)
       if LAYER_BUFS:
         wqkv = self.wqkv_lb.assign(wqkv)
         wo = self.wo_lb.assign(wo)
