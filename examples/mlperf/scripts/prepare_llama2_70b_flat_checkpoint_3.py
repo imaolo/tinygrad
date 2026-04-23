@@ -76,6 +76,32 @@ def build_flat_state_dict(ref_state_dict:dict[str, Tensor]) -> dict[str, Tensor]
   return flat_state_dict
 
 
+def assert_same_tensor(name:str, ref_tensor:Tensor, transformed_tensor:Tensor) -> None:
+  max_diff = (ref_tensor.float() - transformed_tensor.float()).abs().max().item()
+  if max_diff != 0.0:
+    raise RuntimeError(f"sanity check failed for {name}: max diff {max_diff}")
+
+
+def run_sanity_checks(ref_state_dict:dict[str, Tensor], flat_state_dict:dict[str, Tensor]) -> None:
+  hidden_dim = LLAMA2_70B_ARGS["hidden_dim"]
+  n_layers = LLAMA2_70B_ARGS["n_layers"]
+  layers_to_check = sorted({0, n_layers // 2, n_layers - 1})
+
+  for i in layers_to_check:
+    assert_same_tensor(f"wqkv[{i}]", ref_state_dict[f"layers.{i}.attention.wqkv.weight"], flat_state_dict["wqkv"][i])
+    assert_same_tensor(f"wo[{i}]", ref_state_dict[f"layers.{i}.attention.wo.weight"], flat_state_dict["wo"][i])
+    assert_same_tensor(f"w2[{i}]", ref_state_dict[f"layers.{i}.feed_forward.w2.weight"], flat_state_dict["w2"][i])
+    assert_same_tensor(f"w13[{i}].w1", ref_state_dict[f"layers.{i}.feed_forward.w1.weight"], flat_state_dict["w13"][i][:hidden_dim])
+    assert_same_tensor(f"w13[{i}].w3", ref_state_dict[f"layers.{i}.feed_forward.w3.weight"], flat_state_dict["w13"][i][hidden_dim:])
+    assert_same_tensor(f"attention_norm[{i}]", ref_state_dict[f"layers.{i}.attention_norm.weight"], flat_state_dict["attention_norm"][i])
+    assert_same_tensor(f"ffn_norm[{i}]", ref_state_dict[f"layers.{i}.ffn_norm.weight"], flat_state_dict["ffn_norm"][i])
+
+  assert_same_tensor("norm.weight", ref_state_dict["norm.weight"], flat_state_dict["norm.weight"])
+  assert_same_tensor("tok_embeddings.weight", ref_state_dict["tok_embeddings.weight"], flat_state_dict["tok_embeddings.weight"])
+  assert_same_tensor("output[0]", ref_state_dict["output.weight"], flat_state_dict["output"][0])
+  print(f"sanity checks passed for layers {layers_to_check}")
+
+
 def clear_existing_tensors() -> None:
   WEIGHTS_PATH.mkdir(parents=True, exist_ok=True)
   existing_tensors = sorted(WEIGHTS_PATH.glob("*.safetensors"))
@@ -114,7 +140,9 @@ def upload_files(files:list[Path]):
 def main() -> None:
   download_reference_weights()
   ref_state_dict = load_reference_state_dict()
+  ref_state_dict_for_checks = ref_state_dict.copy()
   flat_state_dict = build_flat_state_dict(ref_state_dict)
+  run_sanity_checks(ref_state_dict_for_checks, flat_state_dict)
   clear_existing_tensors()
   weight_files = save_state_dict(flat_state_dict)
   commit_info = upload_files(weight_files)
