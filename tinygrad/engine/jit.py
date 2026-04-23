@@ -1,6 +1,6 @@
 from typing import TypeVar, Generic, Callable, Any
 import functools, collections
-from tinygrad.tensor import Tensor
+from tinygrad.tensor import Tensor, all_tensors
 from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, pluralize, VIZ
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType, dtypes
@@ -274,14 +274,27 @@ class TinyJit(Generic[ReturnType]):
 
   def __get__(self, obj, objtype): return functools.partial(self.__call__, obj) # add support for instance methods
 
+  @staticmethod
+  def _snapshot_tensor_state():
+    return [(t, t.uop, t.grad) for tref in list(all_tensors) if (t:=tref()) is not None]
+
+  @staticmethod
+  def _restore_tensor_state(snapshot) -> None:
+    for t, uop, grad in snapshot:
+      t.uop, t.grad = uop, grad
+
   def __call__(self, *args, **kwargs) -> ReturnType:
     input_buf_uops, var_vals, names, expected_input_info = _prepare_jit_inputs(args, kwargs)
     if not JIT or self.cnt == 0:
       # jit ignore
       assert self.fxn is not None
+      snapshot = None
+      if self.skip_exec:
+        snapshot = self._snapshot_tensor_state() if self.skip_exec else None
       with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=self.skip_exec):
         ret = self.fxn(*args, **kwargs)
         if len(params:=get_parameters(ret)): Tensor.realize(*params)
+      if snapshot is not None: self._restore_tensor_state(snapshot)
     elif self.cnt == 1:
       # jit capture
       assert self.fxn is not None
