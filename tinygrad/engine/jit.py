@@ -279,7 +279,7 @@ class TinyJit(Generic[ReturnType]):
     if not JIT or self.cnt == 0:
       # jit ignore
       assert self.fxn is not None
-      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=skip_exec):
+      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=self.skip_exec):
         ret = self.fxn(*args, **kwargs)
         if len(params:=get_parameters(ret)): Tensor.realize(*params)
     elif self.cnt == 1:
