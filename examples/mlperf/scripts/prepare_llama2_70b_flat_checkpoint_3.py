@@ -8,7 +8,7 @@ os.environ["ZEROS"] = "1"
 
 from pathlib import Path
 
-from huggingface_hub import HfApi
+from huggingface_hub import CommitOperationDelete, HfApi
 from tqdm import tqdm
 
 from tinygrad import Tensor
@@ -84,6 +84,14 @@ def upload_files(files:list[Path]):
   print(f"uploading flat model weights to {HF_REPO_ID}")
   api = HfApi()
   api.create_repo(repo_id=HF_REPO_ID, exist_ok=True)
+  remote_files = api.list_repo_files(repo_id=HF_REPO_ID)
+  if remote_files:
+    print(f"deleting {len(remote_files)} existing remote files from {HF_REPO_ID}")
+    api.create_commit(
+      repo_id=HF_REPO_ID,
+      operations=[CommitOperationDelete(path_in_repo=path) for path in remote_files],
+      commit_message="Delete existing repo contents before uploading rebuilt flat weights",
+    )
   return api.upload_folder(
     folder_path=WEIGHTS_PATH,
     repo_id=HF_REPO_ID,
