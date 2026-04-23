@@ -144,13 +144,9 @@ def get_parameters(obj) -> list[Tensor]:
 
 def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
   if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
-  sz = t.shape[axis] // len(devices)
-  slices = []
-  for i, d in enumerate(devices):
-    bounds = tuple((0, s) if j != axis else (i*sz, (i+1)*sz) for j, s in enumerate(t.shape))
-    slices.append(t.shrink(bounds).to(d))
-  return Tensor(slices[0].uop.mstack(*[s.uop for s in slices[1:]]).multi(axis),
-                device=devices, dtype=t.dtype, requires_grad=t.requires_grad)
+  # Disk-backed tensors loaded from checkpoint files can have byte offsets that make direct
+  # shrink/copy sharding incorrect. Stage once on CPU, then shard from a normal realized tensor.
+  return t.to("CPU").realize().shard(devices, axis)
 
 def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True, to:bool=True) -> list[Tensor]:
   """
