@@ -81,9 +81,7 @@ def build_flat_state_dict(ref_state_dict:dict[str, Tensor]) -> dict[str, Tensor]
     progress.update()
     flat_state_dict["ffn_norm"] = pop_stacked_layers(ref_state_dict, "layers.{i}.ffn_norm.weight", "ffn_norm")
     progress.update()
-    with tqdm(total=1, desc="prepare freqs_cis", unit="tensor", leave=False) as inner:
-      flat_state_dict["freqs_cis"] = precompute_freqs_cis(LLAMA2_70B_ARGS["dim"] // LLAMA2_70B_ARGS["n_heads"], MAX_CONTEXT * 2, rope_theta).contiguous().requires_grad_(False)
-      inner.update()
+    flat_state_dict["freqs_cis"] = precompute_freqs_cis(LLAMA2_70B_ARGS["dim"] // LLAMA2_70B_ARGS["n_heads"], MAX_CONTEXT * 2, rope_theta).contiguous().requires_grad_(False)
     progress.update()
     flat_state_dict["norm.weight"] = convert_single_tensor("norm.weight", norm_weight)
     progress.update()
