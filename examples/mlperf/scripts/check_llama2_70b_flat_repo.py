@@ -85,6 +85,8 @@ def max_abs_diff(a:Tensor, b:Tensor) -> float:
 
 
 def assert_exact(name:str, a:Tensor, b:Tensor) -> None:
+  a = a.to('CPU').float().realize()
+  b = b.to('CPU').float().realize()
   diff = max_abs_diff(a, b)
   if diff != 0.0:
     raise RuntimeError(f"{name} mismatch: max diff {diff}")
