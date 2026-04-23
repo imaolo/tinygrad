@@ -50,7 +50,7 @@ def main() -> None:
 
   # load weights into memory and combine w1 & w3
   state_dict = load_files()
-  state_dict["w13"] = state_dict.pop("w1").to('CPU').cat(state_dict.pop("w3").to('CPU'), dim=1)
+  state_dict["w13"] = state_dict.pop("w1").to('CPU').cat(state_dict.pop("w3").to('CPU'), dim=1).realize()
 
   # save the cat version
   weight_files = save_state(state_dict)
