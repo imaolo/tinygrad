@@ -7,7 +7,7 @@ from tinygrad.helpers import prod, unwrap, EMULATED_DTYPES, flatten
 from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, sym_infer, buffers, graph_rewrite
 from tinygrad.device import Device, Buffer, MultiBuffer
 from tinygrad.renderer import ProgramSpec, Estimates
-from tinygrad.codegen import get_program
+from tinygrad.codegen import get_program, to_program
 
 # **************** Stat ****************
 
@@ -145,7 +145,7 @@ def get_runner(device:str, ast:UOp) -> CompiledRunner:
 
 # NOTE: ctx is the buffers
 si_lowerer = PatternMatcher([
-  (UPat((Ops.SINK, Ops.PROGRAM, Ops.BEAM), name="sink"), lambda ctx,sink: get_runner(ctx[0].device, sink)),
+  (UPat((Ops.SINK, Ops.PROGRAM), name="sink"), lambda ctx,sink: get_runner(ctx[0].device, sink)),
   (UPat(Ops.BUFFER_VIEW), lambda ctx: ViewOp(ctx[0])),
   (UPat(Ops.COPY), lambda ctx: (BufferXfer(ctx[0].nbytes, ctx[0].device, ctx[1].device) \
       if hasattr(alc:=Device[ctx[0].device].allocator, '_transfer') and alc.supports_transfer and all_same([x.device.split(":")[0] for x in ctx]) \
@@ -191,33 +191,9 @@ class ExecItem:
       self.prg.first_run = False
     return et
 
-# **************** main run function ****************
+# **************** run linear ****************
 
 capturing: list = []  # put classes with an add_linear method in here
-
-def run_schedule(schedule:list[ExecItem], var_vals:dict[str, int]|None=None, do_update_stats=True):
-  while len(schedule):
-    ei = schedule.pop(0).lower()
-    sink = ei.ast.src[0] if ei.ast.op is Ops.BEAM else ei.ast
-    if VALIDATE_WITH_CPU and sink.op is Ops.SINK:
-      # copy in allocated buffers from the GPU
-      bufs = [b for b in ei.bufs if b is not None]
-      nb: list[Buffer|None] = [Buffer("CPU", b.size, b.dtype) for b in bufs]
-      for cpu_b, gpu_b in zip(nb, bufs):
-        if cpu_b is not None and gpu_b.is_allocated(): cpu_b.ensure_allocated().copyin(gpu_b.as_memoryview())
-
-      # run on GPU
-      ei.run(var_vals, do_update_stats=do_update_stats)
-
-      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      ExecItem(sink, nb, ei.metadata, ei.fixedvars).run(var_vals, do_update_stats=do_update_stats)
-      import numpy as np
-      assert nb[0] is not None
-      np.testing.assert_allclose(bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
-    else:
-      ei.run(var_vals, do_update_stats=do_update_stats)
-
-# **************** run linear ****************
 
 @dataclass
 class ExecContext:
@@ -229,7 +205,7 @@ class ExecContext:
 def _resolve(b:UOp, inputs:tuple[UOp, ...]) -> UOp:
   if b.op is Ops.BUFFER_VIEW and b.src[0].op is Ops.PARAM: return b.replace(src=(inputs[b.src[0].arg], *b.src[1:]))
   return inputs[b.arg] if b.op is Ops.PARAM else b
-def resolve_params(ctx:ExecContext, call:UOp) -> list[UOp]: return [_resolve(b, ctx.input_uops) for b in call.src[1:] if b.op is not Ops.BIND]
+def resolve_params(call:UOp, inputs:tuple[UOp, ...]) -> list[UOp]: return [_resolve(b, inputs) for b in call.src[1:] if b.op is not Ops.BIND]
 
 @contextlib.contextmanager
 def track_stats(ctx:ExecContext, call:UOp, device:str, display_name:str, estimates:Estimates, bufs:list[Buffer], var_vals:dict[str, int],
@@ -253,14 +229,14 @@ def unwrap_multi(call:UOp, resolved:list[UOp]) -> Iterator[tuple[list[Buffer], d
     for j, per_dev in enumerate(zip(*[cast(MultiBuffer, b).bufs for b in bufs])): yield list(per_dev), {dnum: j} if dnum else {}
 
 def exec_view(ctx:ExecContext, call, ast):
-  resolved = resolve_params(ctx, call)
+  resolved = resolve_params(call, ctx.input_uops)
   bufs = [cast(Buffer, b.buffer) for b in resolved]
   bv = bufs[1].view(resolved[0].arg, ast.dtype, ast.arg[1]*bufs[1].dtype.itemsize)
   with track_stats(ctx, call, bv.device, colored(f"view {bv.nbytes:8d} @ {bv.offset:<10d}", "yellow"), Estimates(), [bv, bufs[1]], ctx.var_vals):
     buffers[resolved[0]] = bv
 
 def exec_copy(ctx:ExecContext, call, ast):
-  for bufs, device_vars in unwrap_multi(call, resolve_params(ctx, call)):
+  for bufs, device_vars in unwrap_multi(call, resolve_params(call, ctx.input_uops)):
     dest, src = bufs[0].ensure_allocated(), bufs[1].ensure_allocated()
     xfer = hasattr(alc:=Device[dest.device].allocator,'_transfer') and alc.supports_transfer and dest.device.split(":")[0]==src.device.split(":")[0]
     prg = (BufferXfer if xfer else BufferCopy)(dest.nbytes, dest.device, src.device)
@@ -268,14 +244,12 @@ def exec_copy(ctx:ExecContext, call, ast):
       prg.copy(dest, src)
 
 def exec_kernel(ctx:ExecContext, call, ast):
-  sink = ast.src[0] if ast.op is Ops.BEAM else ast
-
-  for bufs, device_vars in unwrap_multi(call, resolve_params(ctx, call)):
+  for bufs, device_vars in unwrap_multi(call, resolve_params(call, ctx.input_uops)):
     var_vals = {**ctx.var_vals, **device_vars}
     prg = get_runner(bufs[0].device, ast)
     prg_bufs = [bufs[i].ensure_allocated() for i in prg.p.globals]
 
-    if VALIDATE_WITH_CPU and sink.op is Ops.SINK:
+    if VALIDATE_WITH_CPU and ast.op is Ops.SINK:
       cpu_bufs = [Buffer("CPU", b.size, b.dtype).ensure_allocated().copyin(b.ensure_allocated().as_memoryview()) for b in bufs]
 
     with track_stats(ctx, call, prg.device, prg.display_name, prg.estimates, prg_bufs, var_vals,
@@ -283,14 +257,14 @@ def exec_kernel(ctx:ExecContext, call, ast):
       timing[0] = prg(prg_bufs, var_vals, wait=DEBUG >= 2)
       prg.first_run = False
 
-    if VALIDATE_WITH_CPU and sink.op is Ops.SINK:
+    if VALIDATE_WITH_CPU and ast.op is Ops.SINK:
       import numpy as np
-      cpu_prg = get_runner("CPU", sink)
+      cpu_prg = get_runner("CPU", ast)
       cpu_prg([cpu_bufs[i] for i in cpu_prg.p.globals], var_vals, wait=False)
       for i in prg.p.outs: np.testing.assert_allclose(prg_bufs[i].numpy(), cpu_bufs[i].numpy(), rtol=1e-3, atol=1e-3)
 
 def exec_encdec(ctx:ExecContext, call, ast):
-  bufs = [cast(Buffer, b.buffer).ensure_allocated() for b in resolve_params(ctx, call)]
+  bufs = [cast(Buffer, b.buffer).ensure_allocated() for b in resolve_params(call, ctx.input_uops)]
   shape, pos_var = tuple(s.arg for s in ast.src if s.op is Ops.CONST), ast.variables()[0].expr
   with track_stats(ctx, call, bufs[0].device, colored(f"enc/dec {size_to_str(bufs[0].nbytes)}", "yellow"),
                    Estimates(lds=bufs[0].nbytes, mem=bufs[0].nbytes), bufs, ctx.var_vals):
@@ -298,28 +272,36 @@ def exec_encdec(ctx:ExecContext, call, ast):
 
 graph_cache:weakref.WeakKeyDictionary[UOp, Runner] = weakref.WeakKeyDictionary()
 def exec_graph(ctx:ExecContext, call, cf):
-  inputs = resolve_params(ctx, call)
-  bufs = flatten([b.bufs if isinstance(b, MultiBuffer) else [b] for b in (u.buffer for u in inputs)])
+  bufs = flatten([b.bufs if isinstance(b, MultiBuffer) else [b] for b in (u.buffer for u in resolve_params(call, ctx.input_uops))])
   if (runner:=graph_cache.get(cf)) is None:
-    sub = cf.substitute(dict(zip(cf.src[1:], inputs)))
-    graph_cache[cf] = runner = Device[cf.device if isinstance(cf.device, str) else cf.device[0]].graph(sub, bufs)
+    graph_cache[cf] = runner = Device[cf.device if isinstance(cf.device, str) else cf.device[0]].graph(cf, bufs, input_uops=ctx.input_uops)
   with track_stats(ctx, call, runner.device, runner.display_name, runner.estimates, bufs, ctx.var_vals) as t:
-    t[0] = runner(bufs, ctx.var_vals, wait=DEBUG >= 2)
+    t[0] = runner(bufs, ctx.var_vals, wait=DEBUG >= 2, input_uops=ctx.input_uops) # type: ignore[call-arg]
 
+# ctx is beam value
 pm_beam = PatternMatcher([
   (UPat(Ops.CALL, src=(UPat(Ops.SINK, name="sink"),), name="call", allow_any_len=True),
-   lambda ctx,call,sink: call.replace(src=(UOp(Ops.BEAM, src=(sink,), arg=ctx), *call.src[1:]))),
+   lambda ctx,call,sink: call.replace(src=(sink.replace(arg=replace(sink.arg, beam=ctx)), *call.src[1:])) if sink.arg.beam == 0 else None),
+])
+
+pm_compile = PatternMatcher([
+  (UPat(Ops.CALL, src=(UPat((Ops.SINK, Ops.PROGRAM), name="ast"),), name="call", allow_any_len=True), lambda call,ast:
+    call.replace(src=(to_program(ast, Device[call.device if isinstance(call.device, str) else call.device[0]].renderer), *call.src[1:]))),
 ])
 
 pm_exec = PatternMatcher([
   (UPat(Ops.CALL, src=(UPat(Ops.BUFFER_VIEW, name="ast"),), name="call", allow_any_len=True), exec_view),
   (UPat(Ops.CALL, src=(UPat(Ops.COPY, name="ast"),), name="call", allow_any_len=True), exec_copy),
-  (UPat(Ops.CALL, src=(UPat((Ops.SINK, Ops.PROGRAM, Ops.BEAM), name="ast"),), name="call", allow_any_len=True), exec_kernel),
+  (UPat(Ops.CALL, src=(UPat((Ops.PROGRAM, Ops.SINK), name="ast"),), name="call", allow_any_len=True), exec_kernel),
   (UPat(Ops.CALL, src=(UPat(Ops.CUSTOM_FUNCTION, arg="encdec", name="ast"),), name="call", allow_any_len=True), exec_encdec),
   (UPat(Ops.CALL, src=(UPat(Ops.CUSTOM_FUNCTION, arg="graph", name="cf"),), name="call", allow_any_len=True), exec_graph),
 ])
 
+def compile_linear(linear:UOp, beam=0) -> UOp:
+  if (beam_val:=(beam or BEAM.value)) >= 1: linear = graph_rewrite(linear, pm_beam, ctx=beam_val, walk=True)
+  return graph_rewrite(linear, pm_compile, name="precompile kernels", walk=True) if not VALIDATE_WITH_CPU else linear
+
 def run_linear(linear:UOp, var_vals:dict[str, int]|None=None, input_uops:tuple[UOp, ...]=(), do_update_stats=True, jit=False):
-  if BEAM >= 1: linear = graph_rewrite(linear, pm_beam, ctx=BEAM.value, name="add beam")
+  if not jit: linear = compile_linear(linear)
   ctx = ExecContext(var_vals or {}, input_uops, do_update_stats, jit)
   for call in linear.src: pm_exec.rewrite(call, ctx)
