@@ -253,12 +253,13 @@ def _prepare_jit_inputs(args, kwargs):
   return input_buf_uops, var_vals, names, expected_input_info
 
 class TinyJit(Generic[ReturnType]):
-  def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False):
+  def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False, skip_exec=False):
     assert fxn or captured, "need either a function or a CapturedJit"
     self.fxn = fxn
     self.captured: CapturedJit|None = captured
     self.cnt: int = 2 if self.fxn is None else 0
     self.prune = prune
+    self.skip_exec = skip_exec
 
   def add_linear(self, linear:UOp, var_vals:dict[str, int]): self._linears.append(linear)
 
@@ -278,7 +279,7 @@ class TinyJit(Generic[ReturnType]):
     if not JIT or self.cnt == 0:
       # jit ignore
       assert self.fxn is not None
-      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=1):
+      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=skip_exec):
         ret = self.fxn(*args, **kwargs)
         if len(params:=get_parameters(ret)): Tensor.realize(*params)
     elif self.cnt == 1:
