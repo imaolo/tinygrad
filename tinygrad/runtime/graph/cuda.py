@@ -12,6 +12,9 @@ class CUDAGraph(MultiGraphRunner):
   def __init__(self, linear, input_buffers, input_uops=()):
     super().__init__(linear, input_buffers, input_uops)
 
+    try: self.dev = CUDADevice.current()
+    except RuntimeError: self.dev = cast(CUDADevice, Device[self.calls[0][2][0].device])
+    check(cuda.cuCtxSetCurrent(self.dev.context))
     self.nodes: list[tuple[Any, ...]] = [] # list of tuple(graph node, node params, c_args/context, is memcpy)
     self.graph = init_c_var(cuda.CUgraph, lambda x: check(cuda.cuGraphCreate(ctypes.byref(x), 0)))
 
@@ -46,6 +49,7 @@ class CUDAGraph(MultiGraphRunner):
     return (cuda.CUgraphNode*len(deps))(*deps) if deps else None, node
 
   def __call__(self, input_buffers, var_vals, wait=False, input_uops=None):
+    check(cuda.cuCtxSetCurrent(self.dev.context))
     # Update buffers in the c_args struct.
     for j in self.updatable:
       (_, params, c_args, is_copy), dev_idx = self.nodes[j], self.calls[j][0]
@@ -69,14 +73,13 @@ class CUDAGraph(MultiGraphRunner):
       else: check(cuda.cuGraphExecMemcpyNodeSetParams(self.instance, node, ctypes.byref(c_node_params), c_args))
 
     if not PROFILE: return cu_time_execution(lambda: check(cuda.cuGraphLaunch(self.instance, None)), enable=wait)
-    dev = cast(CUDADevice, Device[self.device])
     st = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
     en = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
     check(cuda.cuEventRecord(st, None))
     check(cuda.cuGraphLaunch(self.instance, None))
     check(cuda.cuEventRecord(en, None))
-    dev.pending_profile_records.append((st, en, self.display_name, perf_counter_us()))
-    if wait: dev.synchronize()
+    self.dev.pending_profile_records.append((st, en, self.display_name, perf_counter_us()))
+    if wait: self.dev.synchronize()
     return None
 
   def __del__(self):

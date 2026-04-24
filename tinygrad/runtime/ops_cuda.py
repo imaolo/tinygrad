@@ -15,6 +15,8 @@ def check(status):
     error = ctypes.string_at(init_c_var(ctypes.POINTER(ctypes.c_char), lambda x: cuda.cuGetErrorString(status, ctypes.byref(x)))).decode()
     raise RuntimeError(f"CUDA Error {status}, {error}")
 
+def _ctx_value(ctx): return ctypes.cast(ctx, ctypes.c_void_p).value
+
 def encode_args(args, vals) -> tuple[ctypes.Structure, ctypes.Array]:
   c_args = init_c_struct_t(len(args) * 8 + len(vals) * 4, tuple([(f'f{i}', cuda.CUdeviceptr_v2, i*8) for i in range(len(args))] +
                                                                 [(f'v{i}', ctypes.c_int, len(args)*8 + i*4) for i in range(len(vals))]))(*args, *vals)
@@ -132,10 +134,19 @@ class CUDADevice(Compiled):
 
   def count(self) -> int: return init_c_var(ctypes.c_int, lambda x: check(cuda.cuDeviceGetCount(ctypes.byref(x)))).value
 
+  @staticmethod
+  def current() -> CUDADevice:
+    ctx = init_c_var(cuda.CUcontext, lambda x: check(cuda.cuCtxGetCurrent(ctypes.byref(x))))
+    ctx_val = _ctx_value(ctx)
+    for dev in CUDADevice.devices:
+      if _ctx_value(dev.context) == ctx_val: return dev
+    raise RuntimeError("current CUDA context does not belong to an opened CUDADevice")
+
   def synchronize(self):
     check(cuda.cuCtxSetCurrent(self.context))
     check(cuda.cuCtxSynchronize())
     for st, en, name, cpu_st in self.pending_profile_records:
+      check(cuda.cuEventSynchronize(en))
       check(cuda.cuEventElapsedTime(ctypes.byref(ret := ctypes.c_float()), st, en))
       cuda.cuEventDestroy_v2(st)
       cuda.cuEventDestroy_v2(en)
