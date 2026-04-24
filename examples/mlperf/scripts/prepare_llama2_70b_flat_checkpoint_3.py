@@ -32,7 +32,7 @@ def load_reference_state_dict() -> dict[str, Tensor]:
     ref_state_dict.update(safe_load(weight_file))
   return convert_from_huggingface(ref_state_dict, LLAMA2_70B_ARGS["n_layers"], LLAMA2_70B_ARGS["n_heads"], LLAMA2_70B_ARGS["n_kv_heads"])
 
-def pop_stacked_layers(state_dict:dict[str, Tensor], key_fmt:str, name:str) -> Tensor:
+def pop_stacked_layers(state_dict:dict[str, Tensor], key_fmt:str) -> Tensor:
   return Tensor.stack([state_dict.pop(key_fmt.format(i=i)) for i in range(LLAMA2_70B_ARGS["n_layers"])])
 
 def build_flat_state_dict(ref_state_dict:dict[str, Tensor]) -> dict[str, Tensor]:
