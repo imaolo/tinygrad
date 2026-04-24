@@ -69,9 +69,9 @@ def list_remote_safetensors(repo_id:str) -> list[str]:
 
 def download_repo(repo_id:str, local_dir:Path) -> None:
   tqdm.write(f"downloading {repo_id} to {local_dir}")
-  # if local_dir.exists():
-  #   tqdm.write(f"removing existing local files from {local_dir}")
-  #   shutil.rmtree(local_dir)
+  if local_dir.exists():
+    tqdm.write(f"removing existing local files from {local_dir}")
+    shutil.rmtree(local_dir)
   local_dir.mkdir(parents=True, exist_ok=True)
   snapshot_download_with_retry(repo_id=repo_id, local_dir=local_dir, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
@@ -97,6 +97,8 @@ def assert_exact(name:str, a:Tensor, b:Tensor) -> None:
 
 
 def compare_matrix_samples(name:str, ref:Tensor, flat:Tensor) -> None:
+  ref.to_('CPU').realize()
+  flat.to_('CPU').realize()
   rows, cols = ref.shape
   row_windows = (
     (0, min(4, rows)),
@@ -208,12 +210,19 @@ def main() -> None:
   check_flat_file_metadata(FLAT_WEIGHTS_PATH)
 
   ref_raw_state = load_repo_state_dict(REF_WEIGHTS_PATH, "load reference shards")
+  for t in ref_raw_state.values():
+    t.to_('CPU').realize()
   tqdm.write("converting reference repo to internal naming")
   ref_state_dict = convert_from_huggingface(ref_raw_state, LLAMA2_70B_ARGS["n_layers"], LLAMA2_70B_ARGS["n_heads"], LLAMA2_70B_ARGS["n_kv_heads"])
+  del ref_raw_state
+  for t in ref_state_dict.values():
+    t.to_('CPU').realize()
 
   flat_state_dict = load_repo_state_dict(FLAT_WEIGHTS_PATH, "load flat shards")
   if sorted(flat_state_dict.keys()) != sorted(EXPECTED_FLAT_KEYS):
     raise RuntimeError(f"flat repo tensor keys mismatch: {sorted(flat_state_dict.keys())}")
+  for t in flat_state_dict.values():
+    t.to_('CPU').realize()
 
   check_small_exact(ref_state_dict, flat_state_dict)
   check_sampled_large_tensors(ref_state_dict, flat_state_dict)
