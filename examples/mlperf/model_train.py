@@ -8,7 +8,6 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
 
 from extra.lr_scheduler import LRSchedulerGroup
-from examples.mlperf.helpers import get_training_state, load_training_state
 from extra.bench_log import BenchEvent, WallTimeEvent
 # TODO: fix benchmark logging and use tinygrad tqdm
 from tqdm import tqdm
@@ -20,6 +19,7 @@ def train_resnet():
   from examples.mlperf.lr_schedulers import PolynomialDecayWithWarmup
   from examples.mlperf.initializers import Conv2dHeNormal, Linear
   from examples.hlb_cifar10 import UnsyncedBatchNorm
+  from examples.mlperf.helpers import get_training_state, load_training_state
 
   config = {}
   seed = config["seed"] = getenv("SEED", 42)
@@ -937,6 +937,7 @@ def train_bert():
   from examples.mlperf.dataloader import batch_load_train_bert, batch_load_val_bert
   from examples.mlperf.helpers import get_mlperf_bert_model, get_fake_data_bert
   from examples.mlperf.lr_schedulers import PolynomialDecayWithWarmup
+  from examples.mlperf.helpers import get_training_state, load_training_state
 
   config = {}
   BASEDIR = getenv("BASEDIR", Path(__file__).parent.parents[1] / "extra" / "datasets" / "wiki")
@@ -1409,7 +1410,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   params = get_parameters(model)
 
-  if getenv("EMPTYWEIGHT"):
+  if getenv("FAKEDATA"):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 
