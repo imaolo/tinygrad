@@ -175,18 +175,10 @@ class FlatTransformer:
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])
+    x = x * attention_norm
 
-    if FP8 and getenv("FUSED_NORM_MUL_QUANTIZE", 1):
-      from extra.amax.cast_amax import fused_mul_quantize_fp8
-      amax_s = amax_xqkv if amax_xqkv is not None else Tensor.full((), 1.0, dtype=dtypes.bfloat16, device=x.device)
-      x_fp8, x_inv_scale, new_amax_xqkv = fused_mul_quantize_fp8(x, attention_norm, amax_s, FP8_DTYPE)
-      xqkv, *ret = matmul(None, wqkv, w_inv_scale=s_qkv, x_fp8=x_fp8, x_scale=x_inv_scale, x_new_amax=new_amax_xqkv)
-      if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x * attention_norm)
-    else:
-      x = x * attention_norm
-      xqkv, *ret = matmul(x, wqkv, amax_x=amax_xqkv, w_inv_scale=s_qkv)
-      if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
-
+    xqkv, *ret = matmul(x, wqkv, amax_x=amax_xqkv, w_inv_scale=s_qkv)
+    if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
     new_amaxs.extend(ret[:1])
     saves.extend(ret[1:] + [xqkv])
     xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
