@@ -22,7 +22,7 @@ def is_cuda_like():
   return target.device == "PYTHON" and target.arch.startswith("sm_")
 
 def wrap(x, s):
-  if isinstance(x, UOp): return s.ruop(x)
+  if isinstance(x, UOp): return x if x._shape is None else s.ruop(x)
   if isinstance(x, (list, tuple)): return type(x)(wrap(y, s) for y in x)
   return x
 

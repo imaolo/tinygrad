@@ -100,7 +100,7 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
           att_block = warp.map(att_block,
             lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
                             (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                           .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+                           .alu(Ops.WHERE, x.ufix(-math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -220,7 +220,7 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
           att_block = warp.map(att_block,
             lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
                             (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                           .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+                           .alu(Ops.WHERE, x.ufix(-math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -323,7 +323,7 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
             att_block = warp.map(att_block,
               lambda x, idx: ((kv_seq * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
                               (q_idx * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                             .alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
+                             .alu(Ops.WHERE, x.ufix(-math.inf), x))
           elif mask is not None:
             mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_idx, kv_seq), axis=2)
             mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
