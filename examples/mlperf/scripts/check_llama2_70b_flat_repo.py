@@ -69,9 +69,9 @@ def list_remote_safetensors(repo_id:str) -> list[str]:
 
 def download_repo(repo_id:str, local_dir:Path) -> None:
   tqdm.write(f"downloading {repo_id} to {local_dir}")
-  if local_dir.exists():
-    tqdm.write(f"removing existing local files from {local_dir}")
-    shutil.rmtree(local_dir)
+  # if local_dir.exists():
+  #   tqdm.write(f"removing existing local files from {local_dir}")
+  #   shutil.rmtree(local_dir)
   local_dir.mkdir(parents=True, exist_ok=True)
   snapshot_download_with_retry(repo_id=repo_id, local_dir=local_dir, allow_patterns=["*safetensors*", "*.json", "*.md"])
 
