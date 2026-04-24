@@ -28,7 +28,6 @@ FLAT_WEIGHTS_PATH = DOWNLOADS_DIR / FLAT_REPO_ID
 EXPECTED_FLAT_KEYS = (
   "attention_norm",
   "ffn_norm",
-  "freqs_cis",
   "norm.weight",
   "output",
   "tok_embeddings.weight",
@@ -51,7 +50,6 @@ def expected_flat_shapes() -> dict[str, tuple[int, ...]]:
   return {
     "attention_norm": (n_layers, dim),
     "ffn_norm": (n_layers, dim),
-    "freqs_cis": (1, MAX_CONTEXT * 2, 1, head_dim // 2, 2),
     "norm.weight": (dim,),
     "output": (1, vocab_size, dim),
     "tok_embeddings.weight": (vocab_size, dim),
@@ -162,11 +160,10 @@ def check_small_exact(ref_state_dict:dict[str, Tensor], flat_state_dict:dict[str
     ("norm.weight", ref_state_dict["norm.weight"], flat_state_dict["norm.weight"]),
     ("tok_embeddings.weight", ref_state_dict["tok_embeddings.weight"], flat_state_dict["tok_embeddings.weight"]),
     ("output[0]", ref_state_dict["output.weight"], flat_state_dict["output"][0]),
-    ("freqs_cis", precompute_freqs_cis(LLAMA2_70B_ARGS["dim"] // LLAMA2_70B_ARGS["n_heads"], MAX_CONTEXT * 2, LLAMA2_70B_ARGS.get("rope_theta", 10000)), flat_state_dict["freqs_cis"]),
   ]
   for name, ref_tensor, flat_tensor in tqdm(checks, desc="check exact small tensors", unit="tensor"):
     assert_exact(name, ref_tensor, flat_tensor)
-  tqdm.write("exact checks passed for norms, embeddings, output, and freqs_cis")
+  tqdm.write("exact checks passed for norms, embeddings, output")
 
 
 def check_sampled_large_tensors(ref_state_dict:dict[str, Tensor], flat_state_dict:dict[str, Tensor]) -> None:
