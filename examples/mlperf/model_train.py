@@ -1409,7 +1409,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   params = get_parameters(model)
 
-  if getenv("FAKEDATA"):
+  if getenv("EMPTYWEIGHT"):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 

@@ -1,11 +1,12 @@
 from typing import TypeVar, Generic, Callable, Any
 import functools, collections
-from tinygrad.tensor import Tensor, all_tensors
-from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, pluralize, VIZ
+from tinygrad.tensor import Tensor
+from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, colored, JIT, JIT_BATCH_SIZE, dedup, pluralize, VIZ, unwrap
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType, dtypes
 from tinygrad.uop.ops import UOp, PatternMatcher, Variable, sym_infer, Ops, buffers, track_rewrites, graph_rewrite
 from tinygrad.engine.realize import ExecItem, capturing, CompiledRunner, Runner, Estimates, compile_linear, run_linear, get_runner, graph_cache
+from tinygrad.engine.realize import unwrap_multi, resolve_params
 from tinygrad.schedule.memory import memory_plan_rewrite, _collect_bufs
 from tinygrad.schedule import linear_to_schedule
 from tinygrad.nn.state import get_parameters
@@ -113,32 +114,42 @@ class GraphRunner(Runner):
         if b is not None: b.ensure_allocated()
     self.input_replace = get_input_replace(self.jit_cache, input_buffers) if input_buffers else {}
 
+    self.calls: list[tuple[int, UOp, list[Buffer], dict[str, int]]] = []
+    self.progs: list[CompiledRunner|None] = []
+    self.uop_replace: list[list[tuple[int, int]]] = []
+    for call in self.linear.src:
+      replace = [(p, b.arg) for p, b in enumerate(b for b in call.src[1:] if b.op is not Ops.BIND) if b.op is Ops.PARAM]
+      for dev_idx, (bufs, device_vars) in enumerate(unwrap_multi(call, resolve_params(call, input_uops))):
+        self.calls.append((dev_idx, call.src[0], [b.ensure_allocated() for b in bufs], device_vars))
+        self.progs.append(get_runner(bufs[0].device, call.src[0]) if call.src[0].op in (Ops.SINK, Ops.PROGRAM) else None)
+        self.uop_replace.append(replace)
+
     self.var_vals_replace:dict[int, list[tuple[int, int]]] = {}
     self.launch_dims_replace:dict[int, tuple[int|None, int|None]] = {}
     self.launch_dims_base:dict[int, tuple[tuple[int, ...], tuple[int, ...]]] = {}
 
     def is_sym_dim(dim) -> bool: return not all(isinstance(d, (int, float)) for d in dim)
 
-    crs = [(ji, ji.prg) for ji in self.jit_cache if isinstance(ji.prg, CompiledRunner)]
-    self.vars = sorted({v.expr for ji,p in crs for v in p.p.vars if v.expr not in ji.fixedvars | p.p.runtimevars})
-    self.symbolic_dims = dedup([tuple(d) for _,p in crs if (d:=p.p.local_size) and is_sym_dim(d)] +
-                               [tuple(d) for _,p in crs if (d:=p.p.global_size) and is_sym_dim(d)])
+    crs = [(j, p, self.calls[j][3]) for j,p in enumerate(self.progs) if isinstance(p, CompiledRunner)]
+    self.vars = sorted({v.expr for _,p,dv in crs for v in p.p.vars if v.expr not in dv | p.p.runtimevars})
+    self.symbolic_dims = dedup(tuple(d) for _,p,_ in crs for d in (p.p.local_size, p.p.global_size) if d and is_sym_dim(d))
 
     def find_symbolic_dim(dim): return self.symbolic_dims.index(tuple(dim)) if dim is not None and tuple(dim) in self.symbolic_dims else None
 
-    estimates = Estimates()
-    for j,ji in enumerate(self.jit_cache):
-      assert ji.prg is not None
-      estimates += ji.prg.estimates
-      if isinstance(ji.prg, CompiledRunner):
-        if (replace:=[(i, self.vars.index(v.expr)) for i, v in enumerate(ji.prg.p.vars) if v.expr not in ji.fixedvars | ji.prg.p.runtimevars]):
-          self.var_vals_replace[j] = replace
+    for j,p,dv in crs:
+      if (replace:=[(i, self.vars.index(v.expr)) for i, v in enumerate(p.p.vars) if v.expr not in dv | p.p.runtimevars]):
+        self.var_vals_replace[j] = replace
+      global_dim_idx, local_dim_idx = find_symbolic_dim(p.p.global_size), find_symbolic_dim(p.p.local_size)
+      if global_dim_idx is not None or local_dim_idx is not None:
+        self.launch_dims_replace[j] = (global_dim_idx, local_dim_idx)
+        assert p.p.local_size is not None
+        self.launch_dims_base[j] = (tuple(p.p.global_size), tuple(p.p.local_size))
 
-        global_dim_idx, local_dim_idx = find_symbolic_dim(ji.prg.p.global_size), find_symbolic_dim(ji.prg.p.local_size)
-        if global_dim_idx is not None or local_dim_idx is not None:
-          self.launch_dims_replace[j] = (global_dim_idx, local_dim_idx)
-          assert ji.prg.p.local_size is not None
-          self.launch_dims_base[j] = (tuple(ji.prg.p.global_size), tuple(ji.prg.p.local_size))
+    estimates = Estimates()
+    for (_, ast, bufs, _), pr in zip(self.calls, self.progs):
+      if ast.op in (Ops.SINK, Ops.PROGRAM): estimates += unwrap(pr).estimates
+      elif ast.op is Ops.COPY or (ast.op is Ops.CUSTOM_FUNCTION and ast.arg == "encdec"):
+        estimates += Estimates(lds=bufs[0].nbytes, mem=bufs[0].nbytes)
 
     # used in MultiGraphRunner. tracks (offset, end, dep) ranges per base buffer id to handle suballocated buffers correctly.
     self.w_dependency_map: dict[int, list[tuple[int, int, Any]]] = collections.defaultdict(list)
@@ -253,13 +264,12 @@ def _prepare_jit_inputs(args, kwargs):
   return input_buf_uops, var_vals, names, expected_input_info
 
 class TinyJit(Generic[ReturnType]):
-  def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False, skip_exec=False):
+  def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False):
     assert fxn or captured, "need either a function or a CapturedJit"
     self.fxn = fxn
     self.captured: CapturedJit|None = captured
     self.cnt: int = 2 if self.fxn is None else 0
     self.prune = prune
-    self.skip_exec = skip_exec
 
   def add_linear(self, linear:UOp, var_vals:dict[str, int]): self._linears.append(linear)
 
@@ -274,27 +284,14 @@ class TinyJit(Generic[ReturnType]):
 
   def __get__(self, obj, objtype): return functools.partial(self.__call__, obj) # add support for instance methods
 
-  @staticmethod
-  def _snapshot_tensor_state():
-    return [(t, t.uop, t.grad) for tref in list(all_tensors) if (t:=tref()) is not None]
-
-  @staticmethod
-  def _restore_tensor_state(snapshot) -> None:
-    for t, uop, grad in snapshot:
-      t.uop, t.grad = uop, grad
-
   def __call__(self, *args, **kwargs) -> ReturnType:
     input_buf_uops, var_vals, names, expected_input_info = _prepare_jit_inputs(args, kwargs)
     if not JIT or self.cnt == 0:
       # jit ignore
       assert self.fxn is not None
-      snapshot = None
-      if self.skip_exec:
-        snapshot = self._snapshot_tensor_state() if self.skip_exec else None
-      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value, SKIP_EXEC=self.skip_exec):
+      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value):
         ret = self.fxn(*args, **kwargs)
         if len(params:=get_parameters(ret)): Tensor.realize(*params)
-      if snapshot is not None: self._restore_tensor_state(snapshot)
     elif self.cnt == 1:
       # jit capture
       assert self.fxn is not None
