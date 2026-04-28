@@ -9,8 +9,8 @@ from tinygrad.runtime.ops_cuda import CUDADevice, check, encode_args, cu_time_ex
 from tinygrad.engine.jit import MultiGraphRunner
 
 class CUDAGraph(MultiGraphRunner):
-  def __init__(self, linear, input_buffers, input_uops=()):
-    super().__init__(linear, input_buffers, input_uops)
+  def __init__(self, linear, input_uops=()):
+    super().__init__(linear, input_uops)
 
     try: self.cuda_dev = CUDADevice.current()
     except RuntimeError: self.cuda_dev = cast(CUDADevice, Device[self.calls[0][2][0].device])
@@ -19,7 +19,7 @@ class CUDAGraph(MultiGraphRunner):
     self.graph = init_c_var(cuda.CUgraph, lambda x: check(cuda.cuGraphCreate(ctypes.byref(x), 0)))
 
     for (dev_idx, ast, bufs, device_vars), prg in zip(self.calls, self.progs):
-      if ast.op in (Ops.SINK, Ops.PROGRAM):
+      if ast.op is Ops.PROGRAM:
         assert prg is not None
         global_size, local_size = prg.p.launch_dims({v: 0 for v in self.vars})
 
