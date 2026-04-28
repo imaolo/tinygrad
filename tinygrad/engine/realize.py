@@ -3,7 +3,7 @@ import time, pprint, random, itertools, math, contextlib, weakref
 from dataclasses import dataclass, replace, field
 from tinygrad.helpers import all_same, colored, DEBUG, GlobalCounters, ansilen, NOOPT, all_int, Metadata, TRACEMETA, TracingKey
 from tinygrad.helpers import BEAM, DEVECTORIZE, size_to_str, time_to_str, VALIDATE_WITH_CPU, cpu_profile, PROFILE, ProfilePointEvent, cpu_events
-from tinygrad.helpers import prod, unwrap, EMULATED_DTYPES, flatten, SKIP_EXEC
+from tinygrad.helpers import prod, unwrap, EMULATED_DTYPES, flatten
 from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, sym_infer, buffers, graph_rewrite
 from tinygrad.device import Device, Buffer, MultiBuffer
 from tinygrad.renderer import ProgramSpec, Estimates
@@ -302,7 +302,6 @@ def compile_linear(linear:UOp, beam=0) -> UOp:
   return graph_rewrite(linear, pm_compile, name="precompile kernels", walk=True) if not VALIDATE_WITH_CPU else linear
 
 def run_linear(linear:UOp, var_vals:dict[str, int]|None=None, input_uops:tuple[UOp, ...]=(), do_update_stats=True, jit=False):
-  if SKIP_EXEC: return 
   if not jit: linear = compile_linear(linear)
   ctx = ExecContext(var_vals or {}, input_uops, do_update_stats, jit)
   for call in linear.src: pm_exec.rewrite(call, ctx)

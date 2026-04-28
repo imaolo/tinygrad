@@ -263,8 +263,6 @@ ALLOW_TF32 = ContextVar("ALLOW_TF32", 0)
 SCACHE = ContextVar("SCACHE", 1)
 # allow use of atomics for embedding backward
 USE_ATOMICS = ContextVar("USE_ATOMICS", 0)
-# used for capturing without allocating
-SKIP_EXEC = ContextVar("SKIP_EXEC", 0)
 
 @dataclass(frozen=True)
 class Metadata:
