@@ -1497,7 +1497,8 @@ def train_llama3(llama2_70b_lora:bool=False):
     # NOTE to(None) required here only when BS > 1
     if is_mp: tokens = tokens.to(None).shard(device)
     if not is_sharding: tokens = tokens.to(None)
-    logits:Tensor = model(tokens[:, :-1])
+    logits:Tensor = model(tokens) if llama2_70b_lora else model(tokens[:, :-1])
+    if llama2_70b_lora: logits = logits[:, :-1]
     if getenv("FAST_CE", 0):
       from extra.amax.cast_amax import fused_ce_loss
       loss = fused_ce_loss(logits.cast(dtypes.bfloat16), tokens[:, 1:], label_smoothing=0.0)
@@ -1535,7 +1536,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     if not is_sharding:
       tokens = tokens.to(None)
       labels = labels.to(None)
-    logits:Tensor = model(tokens[:, :-1])
+    logits:Tensor = model(tokens)[:, :-1]
     loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(labels[:, 1:], ignore_index=-100)
     return loss.flatten().float().to("CPU")
 
@@ -1553,7 +1554,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   def fake_data(bs, samples):
     import numpy as np
     for _ in range(samples // bs):
-      fake_data_np = np.random.randint(0, model_params["vocab_size"], size=(bs, SEQLEN + 1), dtype=np.int32)
+      fake_data_np = np.random.randint(0, model_params["vocab_size"], size=(bs, SEQLEN if llama2_70b_lora else SEQLEN + 1), dtype=np.int32)
       yield Tensor(fake_data_np, device="NPY")
 
   def get_train_iter():
