@@ -6,7 +6,6 @@ os.environ["DEVICE_IN_FUNCTION_BUG"] = "1"
 
 from tinygrad import Device, Tensor, TinyJit, dtypes
 from tinygrad.helpers import Timing
-from extra.gemm.cdna_asm_gemm import can_use_asm_gemm, asm_gemm
 
 # Names follow extra.gemm.cdna_asm_gemm.custom_uop_gemm:
 # uop_gemm_M_N_K computes (M, K) @ (K, N) -> (M, N).
@@ -21,6 +20,7 @@ CASES: dict[str, tuple[int, int, int, str]] = {
 }
 
 def run_one(m:int, n:int, k:int, asm:bool) -> float:
+  from extra.gemm.cdna_asm_gemm import can_use_asm_gemm, asm_gemm
   a = Tensor.empty(1, m, k, dtype=dtypes.bfloat16).realize()
   w = Tensor.empty(n, k, dtype=dtypes.bfloat16).realize()
   Device[Device.DEFAULT].synchronize()
