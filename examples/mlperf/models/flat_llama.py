@@ -23,7 +23,6 @@ def allgather(x: Tensor) -> Tensor:
 
 FP8 = getenv("FP8", 0)
 LORA = getenv("LORA", 0)
-PRE_QUANTIZE = getenv("PRE_QUANTIZE", 1)
 
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
@@ -90,7 +89,6 @@ def rmsnorm(x_in:Tensor, eps:float) -> tuple[Tensor, Tensor]:
   return Tensor(call.gettuple(0)), Tensor(call.gettuple(1))
 
 class FlatTransformer:
-  quantizeable_weight_names = ("wqkv", "wo", "w1", "w2", "w3")
   fsdp_weight_names = ("wqkv", "wo", "w13", "w2")
 
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
@@ -105,7 +103,7 @@ class FlatTransformer:
     self.lora_dropout = lora_dropout
     self.hidden_dim = hidden_dim
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
-    self.fsdp=False
+    self.fsdp = False
 
     # Attention
     self._init_inv_scales = []  # populated by lin_per_layer when FP8
@@ -297,11 +295,7 @@ class FlatTransformer:
             self._fp8_amax[name][i] = self._fp8_amax[name][i].to(device).contiguous().requires_grad_(False)
         for name in self._fp8_inv_scale:
           self._fp8_inv_scale[name] = self._fp8_inv_scale[name].to(device).contiguous().requires_grad_(False)
-      if LORA:
-        self.lora_a.shard_(device, axis=None).realize()
-        self.lora_b.shard_(device, axis=1).realize()
-        self.lora_a_wo.shard_(device, axis=2).realize()
-        self.lora_b_wo.shard_(device, axis=None).realize()
+      assert not LORA, "LORA and MP no supported"
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
@@ -355,7 +349,6 @@ if __name__ == "__main__":
   print("tensor count:", len(state))
 
   # shard the model
-  from tinygrad import Device
   if (DP := getenv("DP", 1)) > 1:
     model.shard(tuple(f"{Device.DEFAULT}:{i}" for i in range(DP)))
   if (MP := getenv("MP", 1)) > 1:
