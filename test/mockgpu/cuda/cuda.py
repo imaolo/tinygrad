@@ -57,10 +57,6 @@ def cuCtxSetCurrent(context) -> int:
   cuda_state.current_context = context.value
   return orig_cuda.CUDA_SUCCESS
 
-def cuCtxGetCurrent(pctx) -> int:
-  pctx._obj.value = cuda_state.current_context or 0
-  return orig_cuda.CUDA_SUCCESS
-
 def cuMemAlloc_v2(dptr, bytesize: int) -> int:
   x = memoryview(bytearray(bytesize))
   dptr._obj.value = mv_address(x)
