@@ -198,10 +198,10 @@ class FlatTransformer:
     xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
     if HK_FLASH_ATTENTION:
       fa_device = xq.device[0] if isinstance(xq.device, tuple) else xq.device
-      if str(fa_device).startswith("CUDA"):
-        from extra.thunder.cuda.fa import flash_attention
-      else:
+      if str(fa_device).startswith("AMD"):
         from extra.thunder.amd.fa import flash_attention
+      else:
+        from extra.thunder.tiny.fa import flash_attention
       attn, *save = flash_attention(xq, xk, xv, is_causal=True)
       saves.extend(save)
     else:
