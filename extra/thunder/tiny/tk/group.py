@@ -1,18 +1,12 @@
 import math
 from typing import cast, Callable
 from tinygrad import dtypes
-from tinygrad.device import Device
 from tinygrad.uop.ops import AxisType, UOp, Ops
 from tinygrad.dtype import AddrSpace, PtrDType
-from tinygrad.helpers import DEV, prod
+from tinygrad.helpers import prod
 
 from extra.thunder.tiny.tk import WARP_THREADS
 from extra.thunder.tiny.tk.tiles import ALL_TILES, ST, RT, RV, TileLayout, VecLayout
-
-_CUDA_WMMA_ARG = ('WMMA_8_16_16___bf16_float', (8, 16, 16), dtypes.bfloat16, dtypes.float, 'CUDA', 32,
-                  (((0, 2), (1, 2), (2, 2)), ((3, 2), (4, 2)), ((5, 2), (6, 2))), ()) # type: ignore
-_CUDA_B0_SCALARS = (0, 1, 4, 5)
-_CUDA_B1_SCALARS = (2, 3, 6, 7)
 
 class Group:
   def __init__(self, warps:int, ker):
@@ -28,58 +22,6 @@ class Group:
   @property
   def groupid(self): return self.ker.threadIdx_x // self.group_threads
 
-  @property
-  def is_cuda(self):
-    if Device.DEFAULT.startswith("CUDA"): return True
-    target = DEV.target(Device.DEFAULT)
-    return target.device == "PYTHON" and target.arch.startswith("sm_")
-
-  def _rt_coords(self, rt:RT, laneid:UOp, inner:UOp) -> tuple[UOp, UOp]:
-    # CUDA WMMA fragments use a different per-lane packing than AMD wave64.
-    # Match the mapping in tinygrad/runtime/ops_python.py so load/store agree with the WMMA emulator.
-    if self.is_cuda and rt.base_shape.rows == 16 and rt.base_shape.cols == 16:
-      if rt.layout == TileLayout.ROW:
-        row = 8 * ((inner // 2) % 2) + laneid // 4
-        col = 2 * (laneid % 4) + (inner % 2) + 8 * (inner // 4)
-      else:
-        t = (inner % 2) + 2 * (inner // 4)
-        row = 2 * (laneid % 4) + (t % 2) + 8 * (t // 2)
-        col = 8 * ((inner // 2) % 2) + laneid // 4
-      return row, col
-    if rt.layout == TileLayout.COL:
-      row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
-      col = laneid % rt.base_shape.cols
-    else:
-      row = laneid % rt.base_shape.rows
-      col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
-    return row, col
-
-  def _cuda_wmma(self, c:UOp, a:UOp, b:UOp, height:UOp, width:UOp, inner:UOp) -> UOp:
-    a_in = UOp.vectorize(*[a[i] for i in range(8)])
-    d0_in = UOp.vectorize(*[c[i] for i in range(4)])
-    d1_in = UOp.vectorize(*[c[i] for i in range(4, 8)])
-    b0_in = UOp.vectorize(*[b[i] for i in _CUDA_B0_SCALARS])
-    b1_in = UOp.vectorize(*[b[i] for i in _CUDA_B1_SCALARS])
-
-    out0 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b0_in, d0_in), arg=_CUDA_WMMA_ARG)
-    out1 = UOp(Ops.WMMA, dtypes.float32.vec(4), (a_in, b1_in, d1_in), arg=_CUDA_WMMA_ARG)
-    c_i = [c[i].store(out0.gep(i)) for i in range(4)] + [c[i+4].store(out1.gep(i)) for i in range(4)]
-    return UOp.group(*c_i).end(height, width, inner)
-
-  def _cuda_prepare_accumulator(self, c:RT) -> tuple[RT, ST|None]:
-    if not self.is_cuda or c.layout == TileLayout.ROW: return c, None
-    rt_shape = (c.shape[-3] * c.base_shape.rows, c.shape[-2] * c.base_shape.cols)
-    acc_smem = self.ker.st(rt_shape, c.dtype.base)
-    acc_row = self.ker.rt(rt_shape, c.dtype.base, TileLayout.ROW, base_shape=c.base_shape)
-    acc_smem = self.store(acc_smem, c)
-    acc_row = self.load(acc_row, acc_smem)
-    return acc_row, acc_smem
-
-  def _cuda_restore_accumulator(self, dst:RT, src:RT, acc_smem:ST|None) -> RT:
-    if acc_smem is None: return src
-    acc_smem = self.store(acc_smem, src)
-    return self.load(dst, acc_smem)
-
   # ops that only work on a single warp
 
   def clear(self, reg:ALL_TILES, value:float=0):
@@ -87,8 +29,8 @@ class Group:
     assert self.warps == 1
 
     rngs_for_shape = tuple(self.ker.raw_range(dim) for dim in reg.shape)
-    reg_idx = reg[*rngs_for_shape]
-    reg_store = reg_idx.store(reg_idx.ufix(value)).end(*rngs_for_shape)
+
+    reg_store = reg[*rngs_for_shape].store(value).end(*rngs_for_shape)
 
     self.ker.push_store(reg_store, reg)
     return reg.after(reg_store).reshape(reg.shape)
@@ -128,20 +70,10 @@ class Group:
     return dst.after(dst_store).reshape(dst.shape)
 
   def mma_AB(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
+    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
     assert self.warps == 1
 
-    a_base_shape = a.base_shape
-    if self.is_cuda:
-      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AB not implemented for {a_base_shape.cols=}")
-      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
-      for height in self.ker.range(c_acc.shape[-3], track=False):
-        for width in self.ker.range(c_acc.shape[-2], track=False):
-          for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c_acc[height, width], a[height, inner], b[inner, width], height, width, inner)
-      self.ker.push_store(c_store, c_acc)
-      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
-      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
+    a_base_shape = cast(RT, a).base_shape
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -168,20 +100,10 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_ABt(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
+    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
     assert self.warps == 1
 
-    a_base_shape = a.base_shape
-    if self.is_cuda:
-      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_ABt not implemented for {a_base_shape.cols=}")
-      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
-      for height in self.ker.range(c_acc.shape[-3], track=False):
-        for width in self.ker.range(c_acc.shape[-2], track=False):
-          for inner in self.ker.range(a.shape[-2], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c_acc[height, width], a[height, inner], b[width, inner], height, width, inner)
-      self.ker.push_store(c_store, c_acc)
-      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
-      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
+    a_base_shape = cast(RT, a).base_shape
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -208,20 +130,10 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_AtB(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
+    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
     assert self.warps == 1
 
-    a_base_shape = a.base_shape
-    if self.is_cuda:
-      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtB not implemented for {a_base_shape.cols=}")
-      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
-      for height in self.ker.range(c_acc.shape[-3], track=False):
-        for width in self.ker.range(c_acc.shape[-2], track=False):
-          for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c_acc[height, width], a[inner, height], b[inner, width], height, width, inner)
-      self.ker.push_store(c_store, c_acc)
-      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
-      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
+    a_base_shape = cast(RT, a).base_shape
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -248,20 +160,10 @@ class Group:
     return c.after(c_store).reshape(c.shape)
 
   def mma_AtBt(self, c:UOp|RT, a:UOp|RT, b:UOp|RT):
-    c, a, b = cast(RT, c), cast(RT, a), cast(RT, b)
+    c, a, b = cast(UOp, c), cast(UOp, a), cast(UOp, b)
     assert self.warps == 1
 
-    a_base_shape = a.base_shape
-    if self.is_cuda:
-      if a_base_shape.cols != 16: raise NotImplementedError(f"cuda mma_AtBt not implemented for {a_base_shape.cols=}")
-      c_acc, acc_smem = self._cuda_prepare_accumulator(c)
-      for height in self.ker.range(c_acc.shape[-3], track=False):
-        for width in self.ker.range(c_acc.shape[-2], track=False):
-          for inner in self.ker.range(a.shape[-3], axis_type=AxisType.REDUCE, track=False):
-            c_store = self._cuda_wmma(c_acc[height, width], a[inner, height], b[width, inner], height, width, inner)
-      self.ker.push_store(c_store, c_acc)
-      c_acc = c_acc.after(c_store).reshape(c_acc.shape)
-      return self._cuda_restore_accumulator(c, c_acc, acc_smem)
+    a_base_shape = cast(RT, a).base_shape
     if a_base_shape.cols == 16:
       wmma_arg = ('WMMA_16_16_16___bf16_float', (16, 16, 16), dtypes.bfloat16, dtypes.float, 'AMD', 64, (((4, 2), (3, 2)), ((4, 2), (3, 2)), ((4, 2), (3, 2))), ()) # type: ignore
     elif a_base_shape.cols == 32:
@@ -304,53 +206,6 @@ class Group:
     return a.after(a_store).reshape(a.shape)
 
   def row_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
-    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.dtype.base.count == 2 and src.layout == TileLayout.ROW:
-      assert self.warps == 1
-      half = src.base_shape.rows // 2
-      row0, row1 = self.laneid // 4, self.laneid // 4 + half
-      lane_group = (self.laneid // 4) * 4
-      lane_inner = self.laneid % 4
-      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
-      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
-
-      for height in self.ker.range(src.shape[-3], track=False):
-        i = self.ker.raw_range(prod(red_reg.shape))
-        red_reg = red_reg.after(height, *[tkr._rng for tkr in self.ker.range_stack])
-        reg_store = red_reg.flatten()[i].store(init_value).end(i)
-        red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        for width in self.ker.range(src.shape[-2], axis_type=AxisType.REDUCE, track=False):
-          for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
-            row, _ = self._rt_coords(src, self.laneid, inner)
-            val = src[height, width, inner]
-            is_row0, is_row1 = row.eq(row0), row.eq(row1)
-            reg_store = UOp.group(
-              red_reg[0].store(is_row0.where(op(red_reg[0], val), red_reg[0])),
-              red_reg[1].store(is_row1.where(op(red_reg[1], val), red_reg[1])),
-            ).end(width, inner)
-            red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        red_local_store = UOp.group(
-          red_local[self.laneid, 0].store(red_reg[0]),
-          red_local[self.laneid, 1].store(red_reg[1]),
-        ).barrier()
-        red_local = red_local.after(red_local_store).reshape(red_local.shape)
-
-        for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
-          peer = lane_group + ((lane_inner + inner + 1) % 4)
-          reg_store = UOp.group(
-            red_reg[0].store(op(red_reg[0], red_local[peer, 0])),
-            red_reg[1].store(op(red_reg[1], red_local[peer, 1])),
-          ).end(inner)
-          red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        prev = vec[height, 0]
-        packed = UOp.vectorize(op(prev.gep(0), red_reg[0]), op(prev.gep(1), red_reg[1]))
-        vec_store = vec[height, 0].store(packed).end(height)
-
-      self.ker.push_store(vec_store, cast(UOp, vec))
-      return cast(RV, vec).after(vec_store).reshape(vec.shape)
-
     vec, src = cast(UOp, vec), cast(UOp, src)
     assert self.warps == 1
 
@@ -358,79 +213,33 @@ class Group:
     red_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
 
     for height in self.ker.range(src.shape[-3], track=False):
-      i = self.ker.raw_range(prod(red_reg.shape))
+      i = self.ker.raw_range(red_reg.size)
       red_reg = red_reg.after(height, *[tkr._rng for tkr in self.ker.range_stack])
       reg_store = red_reg.flatten()[i].store(init_value).end(i)
       red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
       for width in self.ker.range(src.shape[-2], axis_type=AxisType.REDUCE, track=False):
-        for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
+        for inner in self.ker.range(4, axis_type=AxisType.REDUCE, track=False):
           reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(width, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
+      # store to shared memory
       red_local_store = red_local[self.laneid].store(red_reg[0])
       red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      # reduce across the remaining 16-lane fragments in the warp.
-      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
-      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
+      # reduce from shared memory
+      for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
         offset = (self.laneid + (1 + inner) * 16) % self.group_threads
         reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
         red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
+      # reduce with vec
       vec_store = vec[height, 0].store(op(vec[height, 0], red_reg[0])).end(height)
 
     self.ker.push_store(vec_store, vec)
     return vec.after(vec_store).reshape(vec.shape)
 
   def col_reduce(self, vec:UOp|RV, src:UOp|RT, op:Callable[[UOp, UOp], UOp], init_value:float=0.0):
-    if self.is_cuda and isinstance(vec, RV) and isinstance(src, RT) and vec.layout == VecLayout.ORTHO and vec.dtype.base.count == 2 and src.layout == TileLayout.COL:
-      assert self.warps == 1
-      half = src.base_shape.cols // 2
-      col0, col1 = self.laneid // 4, self.laneid // 4 + half
-      lane_group = (self.laneid // 4) * 4
-      lane_inner = self.laneid % 4
-      red_local = self.ker.alloc((self.group_threads, 2), src.dtype.base, AddrSpace.LOCAL)
-      red_reg = self.ker.alloc((2,), src.dtype.base, AddrSpace.REG)
-
-      for width in self.ker.range(src.shape[-2], track=False):
-        i = self.ker.raw_range(prod(red_reg.shape))
-        red_reg = red_reg.after(width, *[tkr._rng for tkr in self.ker.range_stack])
-        reg_store = red_reg.flatten()[i].store(init_value).end(i)
-        red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        for height in self.ker.range(src.shape[-3], axis_type=AxisType.REDUCE, track=False):
-          for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
-            _, col = self._rt_coords(src, self.laneid, inner)
-            val = src[height, width, inner]
-            is_col0, is_col1 = col.eq(col0), col.eq(col1)
-            reg_store = UOp.group(
-              red_reg[0].store(is_col0.where(op(red_reg[0], val), red_reg[0])),
-              red_reg[1].store(is_col1.where(op(red_reg[1], val), red_reg[1])),
-            ).end(height, inner)
-            red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        red_local_store = UOp.group(
-          red_local[self.laneid, 0].store(red_reg[0]),
-          red_local[self.laneid, 1].store(red_reg[1]),
-        ).barrier()
-        red_local = red_local.after(red_local_store).reshape(red_local.shape)
-
-        for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
-          peer = lane_group + ((lane_inner + inner + 1) % 4)
-          reg_store = UOp.group(
-            red_reg[0].store(op(red_reg[0], red_local[peer, 0])),
-            red_reg[1].store(op(red_reg[1], red_local[peer, 1])),
-          ).end(inner)
-          red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
-
-        prev = vec[width, 0]
-        packed = UOp.vectorize(op(prev.gep(0), red_reg[0]), op(prev.gep(1), red_reg[1]))
-        vec_store = vec[width, 0].store(packed).end(width)
-
-      self.ker.push_store(vec_store, cast(UOp, vec))
-      return cast(RV, vec).after(vec_store).reshape(vec.shape)
-
     vec, src = cast(UOp, vec), cast(UOp, src)
     assert self.warps == 1
 
@@ -438,26 +247,27 @@ class Group:
     red_reg = self.ker.alloc((1,), src.dtype.base, AddrSpace.REG)
 
     for width in self.ker.range(src.shape[-2], track=False):
-      i = self.ker.raw_range(prod(red_reg.shape))
+      i = self.ker.raw_range(red_reg.size)
       red_reg = red_reg.after(width, *[tkr._rng for tkr in self.ker.range_stack])
       reg_store = red_reg.flatten()[i].store(init_value).end(i)
       red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
       for height in self.ker.range(src.shape[-3], axis_type=AxisType.REDUCE, track=False):
-        for inner in self.ker.range(src.shape[-1], axis_type=AxisType.REDUCE, track=False):
+        for inner in self.ker.range(4, axis_type=AxisType.REDUCE, track=False):
           reg_store = red_reg[0].store(op(red_reg[0], src[height, width, inner])).end(height, inner)
           red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
+      # store to shared memory
       red_local_store = red_local[self.laneid].store(red_reg[0])
       red_local = red_local.after(red_local_store.barrier()).reshape(red_local.shape)
 
-      # reduce across the remaining 16-lane fragments in the warp.
-      # AMD uses 64-lane waves (offsets 16/32/48), while CUDA/METAL use 32-lane warps (offset 16 only).
-      for inner in self.ker.range((self.group_threads // 16) - 1, axis_type=AxisType.REDUCE, track=False):
+      # reduce from shared memory
+      for inner in self.ker.range(3, axis_type=AxisType.REDUCE, track=False):
         offset = (self.laneid + (1 + inner) * 16) % self.group_threads
         reg_store = red_reg[0].store(op(red_reg[0], red_local[offset])).end(inner)
         red_reg = red_reg.after(reg_store).reshape(red_reg.shape)
 
+      # reduce with vec
       vec_store = vec[width, 0].store(op(vec[width, 0], red_reg[0])).end(width)
 
     self.ker.push_store(vec_store, vec)
@@ -477,7 +287,12 @@ class Group:
       for height in self.ker.range(dst.shape[-3], track=False):
         for width in self.ker.range(dst.shape[-2], track=False):
           for inner in self.ker.range(elements_per_thread, track=False):
-            row, col = self._rt_coords(rt, laneid, inner)
+            if rt.layout != st.layout:
+              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
+              col = laneid % rt.base_shape.cols
+            else:
+              row = laneid % rt.base_shape.rows
+              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
 
             sheight = height
             swidth = width
@@ -523,8 +338,10 @@ class Group:
 
           srow, scol = cast(ST, dst).swizzle(row, col)
 
-          load_idx = src_i + height * st.base_shape.rows * row_stride + width * st.base_shape.cols + row * row_stride + col
-          src_load = srcf[load_idx]
+          src_i += height * st.base_shape.rows * row_stride + width * st.base_shape.cols
+          src_i += row * row_stride + col
+
+          src_load = srcf[src_i]
           if src.dtype.base != dst.dtype.base:
             src_load = src_load.cast(dst.dtype.base)
           dst_store = dst[*dst_idxs, height, width, srow, scol].store(src_load)
@@ -547,17 +364,24 @@ class Group:
             base_row = height * rt.base_shape.rows
             base_col = width * rt.base_shape.cols
 
-            row, col = self._rt_coords(rt, laneid, inner)
+            if rt.layout == TileLayout.COL:
+              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
+              col = laneid % rt.base_shape.cols
+            else:
+              row = laneid % rt.base_shape.rows
+              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
 
             srow, scol = base_row + row, base_col + col
 
-            load_idx = src_i + srow * row_stride + scol
-            src_load = srcf[load_idx]
+            src_i += srow * row_stride + scol
+
+            src_load = srcf[src_i]
             if src.dtype.base != dst.dtype.base:
               src_load = src_load.cast(dst.dtype.base)
             dst_store = dst[*dst_idxs, height, width, inner].store(src_load).end(height, width, inner)
     elif dst_dtype.addrspace == AddrSpace.REG and src_dtype.addrspace == AddrSpace.GLOBAL and isinstance(dst, RV):
       srcf = src.flatten()
+      row_stride = prod(src.shape[axis+1:])
 
       laneid = self.ker.laneid
       rv = cast(RV, dst)
@@ -569,20 +393,12 @@ class Group:
       src_i = ((idxs[0] * src.shape[-3] + idxs[1]) * src.shape[-2] + idxs[2]) * src.shape[-1] + idxs[3]
 
       for outer in self.ker.range(dst.shape[-2], track=False):
-        if self.is_cuda and rv.dtype.base.count == 2:
-          base = src_i + outer * reductions
-          src_load0 = srcf[base + laneid // 4]
-          src_load1 = srcf[base + laneid // 4 + reductions // 2]
-          if src.dtype.base != dst.dtype.base.scalar():
-            src_load0 = src_load0.cast(dst.dtype.base.scalar())
-            src_load1 = src_load1.cast(dst.dtype.base.scalar())
-          dst_store = dst[outer, 0].store(UOp.vectorize(src_load0, src_load1)).end(outer)
-        else:
-          load_idx = src_i + outer * reductions + (laneid % reductions)
-          src_load = srcf[load_idx]
-          if src.dtype.base != dst.dtype.base:
-            src_load = src_load.cast(dst.dtype.base)
-          dst_store = dst[outer, 0].store(src_load).end(outer)
+        src_i += outer * reductions + (laneid % reductions)
+
+        src_load = srcf[src_i]
+        if src.dtype.base != dst.dtype.base:
+          src_load = src_load.cast(dst.dtype.base)
+        dst_store = dst[outer, 0].store(src_load).end(outer)
     else:
       raise NotImplementedError(f"load from {src_dtype.addrspace} to {dst_dtype.addrspace} not implemented for {type(dst)=}")
 
@@ -601,7 +417,12 @@ class Group:
       for height in self.ker.range(src.shape[-3], track=False):
         for width in self.ker.range(src.shape[-2], track=False):
           for inner in self.ker.range(elements_per_thread, track=False):
-            row, col = self._rt_coords(rt, laneid, inner)
+            if rt.layout != st.layout:
+              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
+              col = laneid % rt.base_shape.cols
+            else:
+              row = laneid % rt.base_shape.rows
+              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
 
             srow, scol = cast(ST, dst).swizzle(row, col)
 
@@ -628,17 +449,24 @@ class Group:
             base_row = height * rt.base_shape.rows
             base_col = width * rt.base_shape.cols
 
-            row, col = self._rt_coords(rt, laneid, inner)
+            if rt.layout == TileLayout.COL:
+              row = rt.base_shape.stride * (laneid // rt.base_shape.cols) + inner
+              col = laneid % rt.base_shape.cols
+            else:
+              row = laneid % rt.base_shape.rows
+              col = rt.base_shape.stride * (laneid // rt.base_shape.rows) + inner
 
             srow, scol = base_row + row, base_col + col
+
+            dst_i += srow * row_stride + scol
 
             src_load = src[*src_idxs, height, width, inner]
             if src.dtype.base != dst.dtype.base:
               src_load = src_load.cast(dst.dtype.base)
-            store_idx = dst_i + srow * row_stride + scol
-            dst_store = dstf[store_idx].store(src_load).end(height, width, inner)
+            dst_store = dstf[dst_i].store(src_load).end(height, width, inner)
     elif src_dtype.addrspace == AddrSpace.REG and dst_dtype.addrspace == AddrSpace.GLOBAL and isinstance(src, RV):
       dstf = dst.flatten()
+      row_stride = prod(dst.shape[axis+1:])
 
       laneid = self.ker.laneid
       rv = cast(RV, src)
@@ -650,23 +478,12 @@ class Group:
       dst_i = ((idxs[0] * dst.shape[-3] + idxs[1]) * dst.shape[-2] + idxs[2]) * dst.shape[-1] + idxs[3]
 
       for outer in self.ker.range(src.shape[-2], track=False):
-        if self.is_cuda and rv.dtype.base.count == 2:
-          base = dst_i + outer * reductions
-          src_load = src[outer, 0]
-          left, right = src_load.gep(0), src_load.gep(1)
-          if src.dtype.base.scalar() != dst.dtype.base:
-            left = left.cast(dst.dtype.base)
-            right = right.cast(dst.dtype.base)
-          dst_store = UOp.group(
-            dstf[base + laneid // 4].store(left),
-            dstf[base + laneid // 4 + reductions // 2].store(right),
-          ).end(outer)
-        else:
-          store_idx = dst_i + outer * reductions + (laneid % reductions)
-          src_load = src[outer, 0]
-          if src.dtype.base != dst.dtype.base:
-            src_load = src_load.cast(dst.dtype.base)
-          dst_store = dstf[store_idx].store(src_load).end(outer)
+        dst_i += outer * reductions + (laneid % reductions)
+
+        src_load = src[outer, 0]
+        if src.dtype.base != dst.dtype.base:
+          src_load = src_load.cast(dst.dtype.base)
+        dst_store = dstf[dst_i].store(src_load).end(outer)
     else:
       raise NotImplementedError(f"store from {src_dtype.addrspace} to {dst_dtype.addrspace} not implemented for {type(src)=}")
 

@@ -96,11 +96,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
         # apply attention mask
         if is_causal:
-          bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
+          bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
+          q_base = q_seq * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
+          kv_base = kv_idx * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
           att_block = warp.map(att_block,
-            lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
-                            (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                           .alu(Ops.WHERE, x.ufix(-math.inf), x))
+            lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -216,11 +216,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
         # apply attention mask
         if is_causal:
-          bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
+          bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
+          q_base = q_seq * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
+          kv_base = kv_idx * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
           att_block = warp.map(att_block,
-            lambda x, idx: ((kv_idx * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
-                            (q_seq * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                           .alu(Ops.WHERE, x.ufix(-math.inf), x))
+            lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
         elif mask is not None:
           mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_seq, kv_idx), axis=2)
           mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -319,11 +319,11 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
 
           # apply attention mask
           if is_causal:
-            bs_rows, bs_cols = att_block.base_shape.rows, att_block.base_shape.cols
+            bs_rows, bs_cols, bs_stride = att_block.base_shape.rows, att_block.base_shape.cols, att_block.base_shape.stride
+            q_base = q_idx * Q_BLOCK_SIZE + (warp.laneid % bs_cols)
+            kv_base = kv_seq * KV_BLOCK_SIZE + (warp.laneid // bs_cols) * bs_stride
             att_block = warp.map(att_block,
-              lambda x, idx: ((kv_seq * KV_BLOCK_SIZE + idx[0] * bs_rows + warp._rt_coords(att_block, warp.laneid, idx[2])[0]) >
-                              (q_idx * Q_BLOCK_SIZE + idx[1] * bs_cols + warp._rt_coords(att_block, warp.laneid, idx[2])[1]))
-                             .alu(Ops.WHERE, x.ufix(-math.inf), x))
+              lambda x, idx: ((kv_base + idx[0]*bs_rows + idx[2]) > (q_base + idx[1]*bs_cols)).alu(Ops.WHERE, UOp.ufix(x._uop, -math.inf), x))
           elif mask is not None:
             mask_reg = warp.load(mask_reg, mask, (), (batch, 0, q_idx, kv_seq), axis=2)
             mask_reg_transposed = warp.transpose(mask_reg_transposed, mask_reg)
@@ -383,14 +383,8 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
   attn = _sharded_empty_like(xq, axis=0)
   l_vec = _sharded_empty((B, H, 1, N), xq, axis=0)
 
-  def grad_causal(gradu:UOp, ker:UOp) -> tuple[None, None, UOp, UOp, UOp]:
+  def grad_causal(gradu:UOp, _) -> tuple[None, None, UOp, UOp, UOp]:
     grad = Tensor(gradu, device=gradu.device)
-    attn = Tensor(ker.src[1].after(ker), device=ker.src[1].device)
-    l_vec = Tensor(ker.src[2].after(ker), device=ker.src[2].device)
-    xq = Tensor(ker.src[3], device=ker.src[3].device)
-    xk = Tensor(ker.src[4], device=ker.src[4].device)
-    xv = Tensor(ker.src[5], device=ker.src[5].device)
-
     grad_q = _sharded_empty_like(xq, axis=0)
     grad_k = _sharded_empty_like(xk, axis=0)
     grad_v = _sharded_empty_like(xv, axis=0)
@@ -401,15 +395,8 @@ def flash_attention(xq, xk, xv, attn_mask:Tensor|None=None, is_causal:bool=False
     grad_k, grad_v = Tensor.custom_kernel(grad_k, grad_v, grad, xq, xk, xv, l_vec, delta_vec, fxn=custom_backward_kv_causal)[:2]
     return (None, None, grad_q.uop, grad_k.uop, grad_v.uop)
 
-  def grad_masked(gradu:UOp, ker:UOp) -> tuple[None, None, UOp, UOp, UOp, None]:
+  def grad_masked(gradu:UOp, _) -> tuple[None, None, UOp, UOp, UOp, None]:
     grad = Tensor(gradu, device=gradu.device)
-    attn = Tensor(ker.src[1].after(ker), device=ker.src[1].device)
-    l_vec = Tensor(ker.src[2].after(ker), device=ker.src[2].device)
-    xq = Tensor(ker.src[3], device=ker.src[3].device)
-    xk = Tensor(ker.src[4], device=ker.src[4].device)
-    xv = Tensor(ker.src[5], device=ker.src[5].device)
-    attn_mask = Tensor(ker.src[6], device=ker.src[6].device)
-
     grad_q = _sharded_empty_like(xq, axis=0)
     grad_k = _sharded_empty_like(xk, axis=0)
     grad_v = _sharded_empty_like(xv, axis=0)
