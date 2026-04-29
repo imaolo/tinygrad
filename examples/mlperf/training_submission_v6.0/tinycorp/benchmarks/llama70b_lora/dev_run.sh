@@ -43,6 +43,7 @@ export MAX_GRAD_NORM=${MAX_GRAD_NORM:-0.3}
 export EVAL_TARGET="${EVAL_TARGET:-0.925}"
 export LOAD_MODEL="${LOAD_MODEL:-0}"
 export EVAL_SAMPLES=173
-#   default_basedir = Path(__file__).parent / "scripts" / "llama2_70b_lora" / "dataset" if llama2_70b_lora else Path("/raid/datasets/c4/")
+export BASEDIR = "examples/mlperf/scripts/llama2_70b_lora/dataset"
+export CPU_DISK_LOAD=1
 
-.venv/bin/python -u examples/mlperf/model_train.py
+python3 -u examples/mlperf/model_train.py
