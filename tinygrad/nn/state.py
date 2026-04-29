@@ -1,4 +1,4 @@
-import atexit, json, pathlib, shutil, tempfile, zipfile, pickle, tarfile, struct, functools, io, zlib
+import json, pathlib, zipfile, pickle, tarfile, struct, functools, io, zlib
 from collections import OrderedDict
 from typing import Any, Callable, BinaryIO, Iterable, cast
 from tinygrad.tensor import Tensor
@@ -123,35 +123,7 @@ def get_parameters(obj) -> list[Tensor]:
   """
   return list(get_state_dict(obj).values())
 
-###### AI SLOP
-# @functools.cache
-# def _fake_load_dir() -> pathlib.Path:
-#   p = pathlib.Path(tempfile.mkdtemp(prefix="tinygrad_fake_load_"))
-#   atexit.register(lambda: shutil.rmtree(p, ignore_errors=True))
-#   return p
-
-# def get_fake_state_dict(obj, tensor_filter:Callable[[str, Tensor], bool]|None=None) -> dict[str, Tensor]:
-#   """
-#   Returns a fake `state_dict` backed by sparse temporary DISK tensors with the same shapes and dtypes as `obj`.
-
-#   This exercises the normal disk-backed weight load path without requiring real checkpoint files.
-#   """
-#   return {
-#     k: Tensor.empty(*v.shape, dtype=v.dtype, device=f"disk:{_fake_load_dir() / f'{k.replace('/', '__')}.fake'}")
-#     for k, v in get_state_dict(obj).items()
-#     if tensor_filter is None or tensor_filter(k, v)
-#   }
-
-def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
-  if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
-  # Disk-backed tensors loaded from checkpoint files can have byte offsets that make direct
-  # shrink/copy sharding incorrect. Stage once on CPU, then shard from a normal realized tensor.
-  if getenv("CPU_DISK_LOAD", 1):
-    return t.to("CPU").realize().shard(devices, axis)
-  else:
-    return t.shard(devices, axis)
-
-def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True, to:bool=True) -> list[Tensor]:
+def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=True, consume=False, realize=True) -> list[Tensor]:
   """
   Loads a `state_dict` into a model. Return the loaded Tensors.
 
@@ -181,19 +153,25 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
       if v.shape != state_dict[k].shape:
         if {(), (1,)} == {state_dict[k].shape, v.shape}: state_dict[k] = state_dict[k].reshape(v.shape)
         else: raise ValueError(f'Shape mismatch in layer `{k}`: Expected shape {v.shape}, but found {state_dict[k].shape} in state dict.')
-      if to:
-        if isinstance(v.device, tuple):
-          if isinstance(state_dict[k].device, tuple): v.replace(state_dict[k])
-          elif isinstance(state_dict[k].device, str) and state_dict[k].device.startswith(("DISK", "TINYFS")) and v.uop.axis is not None:
-            v.replace(_direct_disk_shard(state_dict[k], v.device, v.uop.axis))
-          else: v.replace(state_dict[k].shard(v.device, v.uop.axis))
-        else: v.replace(state_dict[k].to(v.device))
-      else:
-        v.replace(state_dict[k])
+      if isinstance(v.device, tuple):
+        if isinstance(state_dict[k].device, tuple): v.replace(state_dict[k])
+        elif isinstance(state_dict[k].device, str) and state_dict[k].device.startswith(("DISK", "TINYFS")) and v.uop.axis is not None:
+          v.replace(_direct_disk_shard(state_dict[k], v.device, v.uop.axis))
+        else: v.replace(state_dict[k].shard(v.device, v.uop.axis))
+      else: v.replace(state_dict[k].to(v.device))
       if realize: v.realize()
       if consume: del state_dict[k]
       ret.append(v)
   return ret
+
+def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
+  if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
+  # Disk-backed tensors loaded from checkpoint files can have byte offsets that make direct
+  # shrink/copy sharding incorrect. Stage once on CPU, then shard from a normal realized tensor.
+  if getenv("CPU_DISK_LOAD", 1):
+    return t.to("CPU").realize().shard(devices, axis)
+  else:
+    return t.shard(devices, axis)
 
 @accept_filename
 def zip_extract(t: Tensor) -> dict[str, Tensor]:
