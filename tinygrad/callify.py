@@ -77,11 +77,6 @@ def contiguous_mops_to_view(c:UOp, src:UOp):
     if not hasattr(Device[c.device].allocator, "_offset"): return None
   elif not all(hasattr(Device[d].allocator, "_offset") for d in c.device): return None
 
-  # replicated tuple-device buffers can lower directly to tuple-device BUFFER_VIEWs
-  if not isinstance(c.device, str) and src.axis is None:
-    if (view := _make_buffer_view(src)) is None: return None
-    return view.contiguous(tag=c.tag)
-
   # for MULTI tensors, use multi_pm to resolve per-shard movement ops, then create BUFFER_VIEW on the resolved result
   if not isinstance(c.device, str):
     from tinygrad.schedule.multi import multi_pm
@@ -154,14 +149,6 @@ def finalize_after(ctx:AllocCtx, x:UOp):
     original_uop: UOp = ctx.uop_list[t]
     ctx.buffer_map[original_uop] = replace_uop.shrink_to(original_uop.shape)
   return ret
-
-def materialize_root(x:UOp, buffer_map:dict[UOp, UOp]) -> UOp|None:
-  # Callify can rewrite a requested output into an AFTER-wrapped buffer without tagging the new buffer.
-  # Substitute any finalized buffers we know about, then strip AFTER deps to recover the concrete result buffer/view.
-  ret = x.substitute(buffer_map, walk=True, name="materialize root")
-  after_map = {u: u.src[0] for u in ret.toposort() if u.op is Ops.AFTER}
-  if after_map: ret = ret.substitute(after_map, walk=True, name="strip after from root")
-  return ret if ret.has_buffer_identity() else None
 
 def replace_input_buffer(ctx:AllocCtx, b:UOp):
   ctx.replacements.append(b)
