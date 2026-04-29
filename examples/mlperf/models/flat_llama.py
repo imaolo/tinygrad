@@ -41,12 +41,6 @@ def _local_abs_max(x:Tensor) -> Tensor:
   fxn = _local_abs_max_fxn(param.uop, x.device)
   return Tensor(fxn[0].uop.call(x.uop).gettuple(0))
 
-def quantize_weight_fp8(w:Tensor):
-  scale = FP8_MAX / (w.abs().max(axis=-1, keepdim=True).detach() + 1e-8)
-  w_scaled = w * scale
-  w_fp8 = w_scaled.detach().clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE)
-  return w_fp8, scale.float().reciprocal().reshape(w.shape[:-1])
-
 def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   new_amax = (_local_abs_max(x) if isinstance(x.device, tuple) else x.abs().max()).detach()
   scale = FP8_MAX / ((amax_state if amax_state is not None else new_amax) + 1e-8)
