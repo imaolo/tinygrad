@@ -8,6 +8,7 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
 
 from extra.lr_scheduler import LRSchedulerGroup
+from examples.mlperf.helpers import get_training_state, load_training_state
 from extra.bench_log import BenchEvent, WallTimeEvent
 # TODO: fix benchmark logging and use tinygrad tqdm
 from tqdm import tqdm
@@ -19,7 +20,6 @@ def train_resnet():
   from examples.mlperf.lr_schedulers import PolynomialDecayWithWarmup
   from examples.mlperf.initializers import Conv2dHeNormal, Linear
   from examples.hlb_cifar10 import UnsyncedBatchNorm
-  from examples.mlperf.helpers import get_training_state, load_training_state
 
   config = {}
   seed = config["seed"] = getenv("SEED", 42)
@@ -937,7 +937,6 @@ def train_bert():
   from examples.mlperf.dataloader import batch_load_train_bert, batch_load_val_bert
   from examples.mlperf.helpers import get_mlperf_bert_model, get_fake_data_bert
   from examples.mlperf.lr_schedulers import PolynomialDecayWithWarmup
-  from examples.mlperf.helpers import get_training_state, load_training_state
 
   config = {}
   BASEDIR = getenv("BASEDIR", Path(__file__).parent.parents[1] / "extra" / "datasets" / "wiki")
@@ -1301,8 +1300,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   BENCHMARK = getenv("BENCHMARK")
 
   config = {}
-  default_basedir = Path(__file__).parent / "scripts" / "llama2_70b_lora" / "dataset" if llama2_70b_lora else Path("/raid/datasets/c4/")
-  BASEDIR            = config["BASEDIR"]                = Path(getenv("BASEDIR", default_basedir))
+  BASEDIR            = config["BASEDIR"]                = Path(getenv("BASEDIR", "/raid/datasets/c4/"))
   BS                 = config["BS"]                     = getenv("BS", 16)
   grad_acc           = config["GRADIENT_ACC_STEPS"]     = getenv("GRADIENT_ACC_STEPS", 1)
   GBS                = config["GLOBAL_BATCH_SIZE"]      = BS * grad_acc
@@ -1410,7 +1408,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
   params = get_parameters(model)
 
-  if getenv("FAKEDATA"):
+  if getenv("EMPTYWEIGHT"):
     for v in get_parameters(model):
       v = v.assign(Tensor.empty(v.shape, dtype=v.dtype))
 
@@ -1421,13 +1419,13 @@ def train_llama3(llama2_70b_lora:bool=False):
   device_count = max(DP, MP, FSDP)
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(device_count))
 
+  model.shard(device, is_mp, is_fsdp)
+
   if llama2_70b_lora:
+    # anything not explicit set is not trainable
     for p in params:
       if not p.requires_grad:
         p.requires_grad_(False)
-
-
-  model.shard(device, is_mp, is_fsdp)
 
   # load the model
   if llama2_70b_lora and getenv("LOAD_MODEL", 1):
@@ -1444,8 +1442,6 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     load_state_dict(model, state_dict, strict=False, realize=True, consume=True)
     del state_dict # just in case
-  
-  print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
   if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
@@ -1458,7 +1454,9 @@ def train_llama3(llama2_70b_lora:bool=False):
                            clip_norm=opt_gradient_clip_norm, device=optim_device)
 
   for p in optim.params:
-    p.grad = p.zeros_like().contiguous()
+    grad_dtype = dtypes.bfloat16 if p.dtype == FP8_DTYPE else p.dtype
+    # grads are sharded if using FSDP
+    p.grad = p.empty_like(dtype=grad_dtype).contiguous()
   grads = [p.grad for p in optim.params]
 
   scheduler = CosineAnnealingLRWithWarmup(optim, opt_base_learning_rate, opt_end_learning_rate, opt_learning_rate_warmup_steps, opt_learning_rate_decay_steps)
@@ -1585,18 +1583,6 @@ def train_llama3(llama2_70b_lora:bool=False):
   i, sequences_seen = resume_ckpt, 0
   step_times = []
 
-  if getenv("BASE_EVAL", 0) and llama2_70b_lora and eval_dataset is not None and EVAL_BS > 0:
-    print("=== BASELINE EVAL (before training) ===")
-    baseline_losses = []
-    baseline_iter = get_eval_iter()
-    for j, tokens in tqdm(enumerate(baseline_iter), total=EVAL_SAMPLES//EVAL_BS):
-      baseline_losses += eval_step(tokens, -100).tolist()
-    baseline_lp = sum(baseline_losses) / len(baseline_losses)
-    print(f"=== BASELINE eval log perplexity: {baseline_lp:.4f} ===")
-    if WANDB:
-      import wandb
-      wandb.log({"eval/baseline_log_perplexity": baseline_lp})
-
   if MLLOGGER and RUNMLPERF:
     MLLOGGER.start(key=mllog_constants.EPOCH_START, metadata={mllog_constants.SAMPLES_COUNT: sequences_seen})
     MLLOGGER.start(key=mllog_constants.BLOCK_START, metadata={mllog_constants.SAMPLES_COUNT: sequences_seen})
@@ -1643,8 +1629,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       tqdm.write(
           f"{i:5} {step_time:.3f} s step, {gbs_time:.3f} s gbs, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, " \
           f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
-      tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
-      tqdm.write("  peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
+      if DEBUG >= 1: tqdm.write("  mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.mem_used_per_device.items())))
 
       if WANDB:
         wandb.log({
