@@ -1,7 +1,6 @@
 import ctypes
 from typing import Any, cast
 import tinygrad.runtime.autogen.cuda as cuda
-from tinygrad.helpers import PROFILE, perf_counter_us
 from tinygrad.runtime.support.c import init_c_var
 from tinygrad.device import Device, MultiBuffer
 from tinygrad.uop.ops import Ops
@@ -12,9 +11,6 @@ class CUDAGraph(MultiGraphRunner):
   def __init__(self, linear, input_uops=()):
     super().__init__(linear, input_uops)
 
-    try: self.cuda_dev = CUDADevice.current()
-    except RuntimeError: self.cuda_dev = cast(CUDADevice, Device[self.calls[0][2][0].device])
-    check(cuda.cuCtxSetCurrent(self.cuda_dev.context))
     self.nodes: list[tuple[Any, ...]] = [] # list of tuple(graph node, node params, c_args/context, is memcpy)
     self.graph = init_c_var(cuda.CUgraph, lambda x: check(cuda.cuGraphCreate(ctypes.byref(x), 0)))
 
@@ -49,7 +45,6 @@ class CUDAGraph(MultiGraphRunner):
     return (cuda.CUgraphNode*len(deps))(*deps) if deps else None, node
 
   def __call__(self, input_buffers, var_vals, wait=False, input_uops=None):
-    check(cuda.cuCtxSetCurrent(self.cuda_dev.context))
     # Update buffers in the c_args struct.
     for j in self.updatable:
       (_, params, c_args, is_copy), dev_idx = self.nodes[j], self.calls[j][0]
@@ -72,15 +67,7 @@ class CUDAGraph(MultiGraphRunner):
       if not is_copy: check(cuda.cuGraphExecKernelNodeSetParams(self.instance, node, ctypes.byref(c_node_params)))
       else: check(cuda.cuGraphExecMemcpyNodeSetParams(self.instance, node, ctypes.byref(c_node_params), c_args))
 
-    if not PROFILE: return cu_time_execution(lambda: check(cuda.cuGraphLaunch(self.instance, None)), enable=wait)
-    st = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
-    en = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
-    check(cuda.cuEventRecord(st, None))
-    check(cuda.cuGraphLaunch(self.instance, None))
-    check(cuda.cuEventRecord(en, None))
-    self.cuda_dev.pending_profile_records.append((st, en, self.display_name, perf_counter_us()))
-    if wait: self.cuda_dev.synchronize()
-    return None
+    return cu_time_execution(lambda: check(cuda.cuGraphLaunch(self.instance, None)), enable=wait)
 
   def __del__(self):
     if hasattr(self, 'graph'): check(cuda.cuGraphDestroy(self.graph))

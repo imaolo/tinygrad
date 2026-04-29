@@ -1,6 +1,6 @@
 from __future__ import annotations
-import ctypes, decimal, functools
-from tinygrad.helpers import DEBUG, DEV, PROFILE, ProfileRangeEvent, getenv, mv_address, perf_counter_us, suppress_finalizing
+import ctypes, functools
+from tinygrad.helpers import DEBUG, DEV, getenv, mv_address, suppress_finalizing
 from tinygrad.device import Compiled, BufferSpec, LRUAllocator
 from tinygrad.renderer.cstyle import CUDARenderer, NVCCRenderer
 from tinygrad.renderer.ptx import PTXRenderer
@@ -14,8 +14,6 @@ def check(status):
   if status != 0:
     error = ctypes.string_at(init_c_var(ctypes.POINTER(ctypes.c_char), lambda x: cuda.cuGetErrorString(status, ctypes.byref(x)))).decode()
     raise RuntimeError(f"CUDA Error {status}, {error}")
-
-def _ctx_value(ctx): return ctypes.cast(ctx, ctypes.c_void_p).value
 
 def encode_args(args, vals) -> tuple[ctypes.Structure, ctypes.Array]:
   c_args = init_c_struct_t(len(args) * 8 + len(vals) * 4, tuple([(f'f{i}', cuda.CUdeviceptr_v2, i*8) for i in range(len(args))] +
@@ -63,15 +61,6 @@ class CUDAProgram:
     else:
       for i in range(len(args)): self.c_args.__setattr__(f'f{i}', args[i])
       for i in range(len(vals)): self.c_args.__setattr__(f'v{i}', vals[i])
-    if PROFILE:
-      st = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
-      en = init_c_var(cuda.CUevent, lambda x: check(cuda.cuEventCreate(ctypes.byref(x), 0)))
-      check(cuda.cuEventRecord(st, None))
-      check(cuda.cuLaunchKernel(self.prg, *global_size, *local_size, self.smem, None, None, self.vargs))
-      check(cuda.cuEventRecord(en, None))
-      self.dev.pending_profile_records.append((st, en, self.name, perf_counter_us()))
-      if wait: self.dev.synchronize()
-      return None
     return cu_time_execution(lambda: check(cuda.cuLaunchKernel(self.prg, *global_size, *local_size, self.smem, None, None, self.vargs)), enable=wait)
 
 class CUDAAllocator(LRUAllocator['CUDADevice']):
@@ -125,7 +114,6 @@ class CUDADevice(Compiled):
       CUDADevice.peer_access = True
 
     self.pending_copyin: list[tuple[int, int, BufferSpec|None]] = []
-    self.pending_profile_records: list[tuple[cuda.CUevent, cuda.CUevent, str, decimal.Decimal]] = []
     CUDADevice.devices.append(self)
 
     from tinygrad.runtime.graph.cuda import CUDAGraph
@@ -134,24 +122,9 @@ class CUDADevice(Compiled):
 
   def count(self) -> int: return init_c_var(ctypes.c_int, lambda x: check(cuda.cuDeviceGetCount(ctypes.byref(x)))).value
 
-  @staticmethod
-  def current() -> CUDADevice:
-    ctx = init_c_var(cuda.CUcontext, lambda x: check(cuda.cuCtxGetCurrent(ctypes.byref(x))))
-    ctx_val = _ctx_value(ctx)
-    for dev in CUDADevice.devices:
-      if _ctx_value(dev.context) == ctx_val: return dev
-    raise RuntimeError("current CUDA context does not belong to an opened CUDADevice")
-
   def synchronize(self):
     check(cuda.cuCtxSetCurrent(self.context))
     check(cuda.cuCtxSynchronize())
-    for st, en, name, cpu_st in self.pending_profile_records:
-      check(cuda.cuEventSynchronize(en))
-      check(cuda.cuEventElapsedTime(ctypes.byref(ret := ctypes.c_float()), st, en))
-      cuda.cuEventDestroy_v2(st)
-      cuda.cuEventDestroy_v2(en)
-      Compiled.profile_events.append(ProfileRangeEvent(self.device, name, cpu_st, cpu_st + decimal.Decimal(str(ret.value * 1000.0))))
-    self.pending_profile_records.clear()
     for opaque,sz,options in self.pending_copyin: self.allocator.free(opaque, sz, options)
     self.pending_copyin.clear()
 
