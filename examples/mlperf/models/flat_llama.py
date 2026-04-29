@@ -16,10 +16,6 @@ from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit, Device
 from tinygrad.helpers import Timing, colored, GlobalCounters, profile_marker
 from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
-from examples.mlperf.helpers import DisableExtendList
-
-def allgather(x: Tensor) -> Tensor:
-  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
 
 FP8 = getenv("FP8", 0)
 LORA = getenv("LORA", 0)
@@ -82,6 +78,9 @@ def rmsnorm(x_in:Tensor, eps:float) -> tuple[Tensor, Tensor]:
   call = UOp.maketuple(fxn[0].uop, fxn[1].uop).call(x_in.uop, grad_fxn=_rmsnorm_bwd)
   return Tensor(call.gettuple(0)), Tensor(call.gettuple(1))
 
+def allgather(x: Tensor) -> Tensor:
+  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
+
 class FlatTransformer:
   fsdp_weight_names = ("wqkv", "wo", "w13", "w2")
 
@@ -93,11 +92,12 @@ class FlatTransformer:
     self.n_kv_heads = n_kv_heads if n_kv_heads is not None else n_heads # n_kv_heads != n_heads implies MQA [arxiv/2307.09288, A.2.1]
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
+    self.hidden_dim = hidden_dim
     self.lora_scale = lora_alpha / lora_rank
     self.lora_dropout = lora_dropout
-    self.hidden_dim = hidden_dim
-    scaled_std = 0.02 / math.sqrt(2 * n_layers)
     self.fsdp = False
+
+    scaled_std = 0.02 / math.sqrt(2 * n_layers)
 
     # Attention
     self._init_inv_scales = []  # populated by lin_per_layer when FP8
@@ -160,10 +160,10 @@ class FlatTransformer:
     return (w * scale.reshape(-1, 1, 1)).clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE)
   def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 amax_xqkv=None, amax_xo=None, s_qkv=None, s_o=None,
-                lora_a:Tensor|None=None, lora_b: Tensor|None=None,
-                lora_a_wo:Tensor|None=None, lora_b_wo:Tensor|None=None,):
+                lora_a:Tensor|None=None, lora_a_wo:Tensor|None=None,
+                lora_b:Tensor|None=None, lora_b_wo:Tensor|None=None):
     bsz, seqlen, _ = x.shape
-    new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
+    new_amaxs, saves = [], []
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])
@@ -208,7 +208,7 @@ class FlatTransformer:
 
   def feed_forward(self, x:Tensor, ffn_norm:Tensor, w13:Tensor, w2:Tensor,
                    amax_x13=None, amax_x2=None, s_13=None, s_2=None):
-    new_amaxs, saves = DisableExtendList(not bool(FP8)), DisableExtendList(not bool(FP8))
+    new_amaxs, saves = [], []
 
     x, rrms = rmsnorm(x, self.norm_eps)
     saves.extend([x, rrms])
@@ -243,13 +243,14 @@ class FlatTransformer:
                 amax_xqkv=None, amax_xo=None,
                 amax_x13=None, amax_x2=None,
                 s_qkv=None, s_o=None, s_13=None, s_2=None,
-                lora_a: Tensor|None=None, lora_b:Tensor|None=None,
-                lora_a_wo: Tensor|None=None, lora_b_wo:Tensor|None=None):
+                lora_a:Tensor|None=None, lora_a_wo:Tensor|None=None,
+                lora_b:Tensor|None=None, lora_b_wo:Tensor|None=None):
     if self.fsdp:
       wqkv, wo, w13, w2 = allgather(wqkv), allgather(wo), allgather(w13), allgather(w2)
     attn, *attn_ret = self.attention(x, freqs_cis, attention_norm, wqkv, wo,
                                      amax_xqkv=amax_xqkv, amax_xo=amax_xo,
-                                     lora_a=lora_a, lora_b=lora_b, lora_a_wo=lora_a_wo, lora_b_wo=lora_b_wo,
+                                     lora_a=lora_a,  lora_a_wo=lora_a_wo,
+                                     lora_b=lora_b, lora_b_wo=lora_b_wo,
                                      s_qkv=s_qkv, s_o=s_o)
     attn_amaxs, attn_saves = attn_ret[:2], attn_ret[2:]
     h = x + attn
@@ -301,7 +302,8 @@ class FlatTransformer:
                     "amax_x13": a["x13"][i], "amax_x2": a["x2"][i]} if a else {}
       scale_layer = {"s_qkv": s["wqkv"][i], "s_o": s["wo"][i],
                      "s_13": s["w13"][i], "s_2": s["w2"][i]} if s else {}
-      lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i], "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
+      lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i],
+                    "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       h, *ret = self.run_layer(h, freqs_cis,
                                self.attention_norm[i], self.wqkv[i], self.wo[i],
                                self.ffn_norm[i], self.w13[i], self.w2[i],
