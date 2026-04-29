@@ -1442,16 +1442,10 @@ def train_llama3(llama2_70b_lora:bool=False):
 
     assert not (unused := (state_dict.keys() - get_state_dict(model).keys())), f"unused weights in state_dict: {sorted(unused)}"
 
-    load_state_dict(model, state_dict, strict=False, realize=True, to=True, consume=True)
-    del state_dict
+    load_state_dict(model, state_dict, strict=False, realize=True, consume=True)
+    del state_dict # just in case
   
-  print("model setup peak mem per device(1): " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
-
-  for param in params:
-    param.realize()
-
-  print("model setup peak mem per device(2): " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
-
+  print("model setup peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
   if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
