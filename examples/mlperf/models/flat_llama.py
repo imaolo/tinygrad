@@ -236,7 +236,7 @@ class FlatTransformer:
     saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
-  @function(precompile=True, precompile_backward=True, allow_implicit=HK_FLASH_ATTENTION and Device.DEFAULT.startswith('CUDA'))
+  @function(precompile=True, precompile_backward=True)
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
                 attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 ffn_norm:Tensor, w13:Tensor, w2:Tensor,
