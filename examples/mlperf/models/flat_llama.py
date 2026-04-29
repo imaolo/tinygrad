@@ -12,7 +12,7 @@ if __name__ == "__main__":
     os.environ["HK_FLASH_ATTENTION"] = "1"
     if "ASM_GEMM" not in os.environ:
       os.environ["ASM_GEMM"] = "1"
-from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit, Device
+from tinygrad import Tensor, nn, function, getenv, dtypes, TinyJit
 from tinygrad.helpers import Timing, colored, GlobalCounters, profile_marker
 from tinygrad.uop.ops import Ops, UOp
 from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
@@ -188,12 +188,8 @@ class FlatTransformer:
     xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
     if FP8: xq, xk, xv = xq.cast(dtypes.bfloat16), xk.cast(dtypes.bfloat16), xv.cast(dtypes.bfloat16)
     xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
-    if HK_FLASH_ATTENTION:
-      fa_device = xq.device[0] if isinstance(xq.device, tuple) else xq.device
-      if str(fa_device).startswith("AMD"):
-        from extra.thunder.amd.fa import flash_attention
-      else:
-        from extra.thunder.tiny.fa import flash_attention
+    if getenv("HK_FLASH_ATTENTION"):
+      from extra.thunder.amd.fa import flash_attention
       attn, *save = flash_attention(xq, xk, xv, is_causal=True)
       saves.extend(save)
     else:
@@ -345,6 +341,7 @@ if __name__ == "__main__":
   print("tensor count:", len(state))
 
   # shard the model
+  from tinygrad import Device
   if (DP := getenv("DP", 1)) > 1:
     model.shard(tuple(f"{Device.DEFAULT}:{i}" for i in range(DP)))
   if (MP := getenv("MP", 1)) > 1:
