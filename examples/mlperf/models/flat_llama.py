@@ -23,7 +23,6 @@ LORA = getenv("LORA", 0)
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 FP8_MAX = 448.0
-HK_FLASH_ATTENTION = getenv("HK_FLASH_ATTENTION", 0)
 
 # per-device abs max without allreduce (matches TE delayed scaling behavior)
 @functools.cache
