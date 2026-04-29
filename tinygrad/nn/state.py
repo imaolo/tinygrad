@@ -165,13 +165,8 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
   return ret
 
 def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
-  if t.shape[axis] % len(devices) != 0: raise RuntimeError(f"multi axis uneven: {t.shape[axis]=} {axis=} {len(devices)=}")
-  # Disk-backed tensors loaded from checkpoint files can have byte offsets that make direct
-  # shrink/copy sharding incorrect. Stage once on CPU, then shard from a normal realized tensor.
-  if getenv("CPU_DISK_LOAD", 1):
-    return t.to("CPU").realize().shard(devices, axis)
-  else:
-    return t.shard(devices, axis)
+  if getenv("CPU_DISK_LOAD", 1): t = t.to("CPU").realize()
+  return t.shard(devices, axis)
 
 @accept_filename
 def zip_extract(t: Tensor) -> dict[str, Tensor]:
