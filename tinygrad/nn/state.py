@@ -165,6 +165,7 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
   return ret
 
 def _direct_disk_shard(t:Tensor, devices:tuple[str, ...], axis:int) -> Tensor:
+  # prevents device:0 spike
   if getenv("CPU_DISK_LOAD", 0): t = t.to("CPU").realize()
   return t.shard(devices, axis)
 
