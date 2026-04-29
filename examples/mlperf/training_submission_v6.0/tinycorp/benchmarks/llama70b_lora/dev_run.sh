@@ -43,7 +43,6 @@ export MAX_GRAD_NORM=${MAX_GRAD_NORM:-0.3}
 export EVAL_TARGET="${EVAL_TARGET:-0.925}"
 export LOAD_MODEL="${LOAD_MODEL:-0}"
 export EVAL_SAMPLES=173
-export BASEDIR="examples/mlperf/scripts/llama2_70b_lora/dataset"
 export CPU_DISK_LOAD=1
 
 python3 -u examples/mlperf/model_train.py
