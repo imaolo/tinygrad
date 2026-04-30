@@ -1422,7 +1422,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   model.shard(device, is_mp, is_fsdp)
 
   if llama2_70b_lora:
-    # anything not explicit set is not trainable
+    # anything not explicitly set is not trainable
     for p in params:
       if not p.requires_grad:
         p.requires_grad_(False)
