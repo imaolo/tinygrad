@@ -539,7 +539,7 @@ def _load_llama2_70b_lora_split(base_dir:Path, split:str) -> tuple[np.ndarray, n
     "parquet",
     data_files={split: str(base_dir / "data" / f"{split}-00000-of-00001.parquet")},
     split=split,
-    cache_dir=str( cache_dir / "llama2_70b_lora_dataset"),
+    cache_dir=str(Path(cache_dir) / "llama2_70b_lora_dataset"),
   )
   return np.asarray(ds["input_ids"], dtype=np.int32), np.asarray(ds["labels"], dtype=np.int64)
 
@@ -571,7 +571,7 @@ def iterate_llama2_70b_lora_dataset(dataset:Llama2LoRAParquetDataset, bs:int, sa
     sample_count = (total // bs) * bs
     if sample_count == 0: return
     rng = np.random.RandomState(seed)
-    idx = np.arange(dataset.count, dtype=np.int64)
+    idx = np.arange(dataset.count, dtype=np.int32)
 
     # each epoch sees the full dataset
     idx = idx.reshape(1, -1).repeat(math.ceil(sample_count / dataset.count), axis=0)
