@@ -1397,7 +1397,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   # vocab_size from the mixtral tokenizer
   if not SMALL: model_params |= {"vocab_size": 32000}
   real_vocab_size = model_params['vocab_size']
-  if (llama_layers:=getenv("LLAMA_LAYERS")) != 0 and not llama2_70b_lora: model_params['n_layers'] = llama_layers
+  if (llama_layers:=getenv("LLAMA_LAYERS")) != 0: model_params['n_layers'] = llama_layers
   print(f"model parameters: {model_params}")
 
   # pad vocab
