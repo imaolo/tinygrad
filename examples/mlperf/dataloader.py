@@ -532,12 +532,20 @@ def batch_load_train_stable_diffusion(urls:str, BS:int):
 
 # llama2 70b lora
 
+def _download_llama2_70b_lora_dataset(base_dir: Path) -> Path:
+    from huggingface_hub import snapshot_download
+    return Path(snapshot_download(repo_id="regisss/scrolls_gov_report_preprocessed_mlperf_2", repo_type="dataset", local_dir=base_dir))
+
 def _load_llama2_70b_lora_split(base_dir:Path, split:str) -> tuple[np.ndarray, np.ndarray]:
   from datasets import load_dataset
 
+  data_dir = base_dir / "data"
+  if not data_dir.exists():
+    data_dir = _download_llama2_70b_lora_dataset(base_dir) / "data"
+
   ds = load_dataset(
     "parquet",
-    data_files={split: str(base_dir / "data" / f"{split}-00000-of-00001.parquet")},
+    data_files={split: str(data_dir / f"{split}-00000-of-00001.parquet")},
     split=split,
     cache_dir=str(Path(cache_dir) / "llama2_70b_lora_dataset"),
   )
