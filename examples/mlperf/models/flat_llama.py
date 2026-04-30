@@ -285,7 +285,7 @@ class FlatTransformer:
             self._fp8_amax[name][i] = self._fp8_amax[name][i].to(device).contiguous().requires_grad_(False)
         for name in self._fp8_inv_scale:
           self._fp8_inv_scale[name] = self._fp8_inv_scale[name].to(device).contiguous().requires_grad_(False)
-      assert not LORA, "LORA and MP no supported"
+      assert not LORA, "LORA and MP unsupported"
 
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
