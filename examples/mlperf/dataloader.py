@@ -530,15 +530,14 @@ def batch_load_train_stable_diffusion(urls:str, BS:int):
     assert all(isinstance(caption, str) for caption in x["txt"])
     yield x
 
-# llama3
+# llama2 70b lora
 
-# ai slop - dont fully understand
-def _load_llama2_70b_lora_split(base_dir:str, split:str) -> tuple[np.ndarray, np.ndarray]:
+def _load_llama2_70b_lora_split(base_dir:Path, split:str) -> tuple[np.ndarray, np.ndarray]:
   from datasets import load_dataset
 
   ds = load_dataset(
     "parquet",
-    data_files={split: str(Path(base_dir) / "data" / f"{split}-00000-of-00001.parquet")},
+    data_files={split: str(base_dir / "data" / f"{split}-00000-of-00001.parquet")},
     split=split,
     cache_dir=str( cache_dir / "llama2_70b_lora_dataset"),
   )
@@ -546,45 +545,45 @@ def _load_llama2_70b_lora_split(base_dir:str, split:str) -> tuple[np.ndarray, np
 
 class Llama2LoRAParquetDataset:
   def __init__(self, base_dir:Path, val:bool=False):
-    split = "validation" if val else "train"
-    self.input_ids, self.labels = _load_llama2_70b_lora_split(str(base_dir), split)
+    self.input_ids, self.labels = _load_llama2_70b_lora_split(base_dir, "validation" if val else "train")
     self.val = val
     self.count = self.input_ids.shape[0]
     self.seqlen = self.input_ids.shape[1]
 
-def get_llama2_70b_lora_dataset(base_dir: Path, val: bool=False) -> Llama2LoRAParquetDataset:
+def get_llama2_70b_lora_dataset(base_dir:Path, val:bool=False) -> Llama2LoRAParquetDataset:
   return Llama2LoRAParquetDataset(base_dir, val=val)
 
-def iterate_llama2_70b_lora_dataset(dataset: Llama2LoRAParquetDataset, bs: int, samples: int|None=None, seed: int=0):
+def iterate_llama2_70b_lora_dataset(dataset:Llama2LoRAParquetDataset, bs:int, samples:int|None=None, seed:int=0):
   if dataset.val:
     total = dataset.count if samples is None else min(samples, dataset.count)
-    for b in range(math.ceil(total / bs)):
-      start = b * bs
-      end = min(start + bs, total)
-      cur = end - start
-      toks = np.zeros((bs, dataset.seqlen), dtype=np.int32)
-      labels = np.full((bs, dataset.seqlen), -100, dtype=np.int64)
-      toks[:cur] = dataset.input_ids[start:end]
-      labels[:cur] = dataset.labels[start:end]
-      yield Tensor(toks, device="NPY"), Tensor(labels, device="NPY")
-  else:
-    order = np.arange(dataset.count, dtype=np.int64)
-    rng = np.random.RandomState(seed)
-    rng.shuffle(order)
-    ptr = 0
-    total = dataset.count if samples is None else samples
-    for _ in range(total // bs):
-      batch = np.empty((bs, dataset.seqlen), dtype=np.int32)
-      for bi in range(bs):
-        if ptr == dataset.count:
-          rng.shuffle(order)
-          ptr = 0
-        batch[bi] = dataset.input_ids[order[ptr]]
-        ptr += 1
-      yield Tensor(batch)
+    full_batch_count = total // bs
 
-def batch_load_llama2_70b_lora(bs: int, samples: int, base_dir: Path, seed: int=0, val: bool=False):
+    for start in range(0, full_batch_count * bs, bs):
+      yield Tensor(dataset.input_ids[start:start + bs]), Tensor(dataset.labels[start:start + bs])
+
+    if (tail := total % bs) != 0:
+      start = full_batch_count * bs
+      toks = np.pad(dataset.input_ids[start:start + bs], ((0, bs - tail), (0, 0)), constant_values=0)
+      labels = np.pad(dataset.labels[start:start + bs], ((0, bs - tail), (0, 0)), constant_values=-100)
+      yield Tensor(toks), Tensor(labels)
+  else:
+    total = dataset.count if samples is None else samples
+    sample_count = (total // bs) * bs
+    if sample_count == 0: return
+    rng = np.random.RandomState(seed)
+    idx = np.arange(dataset.count, dtype=np.int64)
+
+    # each epoch sees the full dataset
+    idx = idx.reshape(1, -1).repeat(math.ceil(sample_count / dataset.count), axis=0)
+    for epoch_idx in idx: rng.shuffle(epoch_idx)
+    idx = idx.flatten()[:sample_count]
+
+    yield from (Tensor(dataset.input_ids[idx[start:start + bs]]) for start in range(0, sample_count, bs))
+
+def batch_load_llama2_70b_lora(bs:int, samples:int, base_dir:Path, seed:int=0, val:bool=False):
   return iterate_llama2_70b_lora_dataset(get_llama2_70b_lora_dataset(base_dir, val=val),bs, samples=samples, seed=seed,)
+
+# llama3
 
 class BinIdxDataset:
   def __init__(self, base_path:Path):
