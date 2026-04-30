@@ -1690,7 +1690,11 @@ def train_llama3(llama2_70b_lora:bool=False):
             MLLOGGER.end(key=mllog_constants.INIT_STOP, value=None)
           return
 
-      log_perplexity = sum(eval_losses) / len(eval_losses)
+      # if the final batch is padded, weigh that loss appropriately
+      if llama2_70b_lora and (tail := (EVAL_SAMPLES % EVAL_BS)) != 0:
+        log_perplexity = ((EVAL_BS * sum(eval_losses[:-1])) + (tail * eval_losses[-1])) / ((EVAL_BS * (len(eval_losses) -1)) + tail)
+      else:
+        log_perplexity = sum(eval_losses) / len(eval_losses)
 
       tqdm.write(f"eval log perplexity: {log_perplexity:.4f}")
 
