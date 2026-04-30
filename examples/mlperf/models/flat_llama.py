@@ -162,10 +162,10 @@ class FlatTransformer:
                 lora_a:Tensor|None=None, lora_a_wo:Tensor|None=None,
                 lora_b:Tensor|None=None, lora_b_wo:Tensor|None=None):
     bsz, seqlen, _ = x.shape
-    new_amaxs, saves = [], []
+    new_amaxs, saves = ([], []) if FP8 else (None, None)
 
     x, rrms = rmsnorm(x, self.norm_eps)
-    saves.extend([x, rrms])
+    if saves is not None: saves.extend([x, rrms])
 
     if FP8 and getenv("FUSED_NORM_MUL_QUANTIZE", 1):
       from extra.amax.cast_amax import fused_mul_quantize_fp8
@@ -177,8 +177,8 @@ class FlatTransformer:
       xqkv, *ret = matmul(x, wqkv, amax_x=amax_xqkv, w_inv_scale=s_qkv)
     if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
 
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [xqkv])
+    if new_amaxs is not None: new_amaxs.extend(ret[:1])
+    if saves is not None: saves.extend(ret[1:] + [xqkv])
     xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
     xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
     xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
@@ -190,23 +190,23 @@ class FlatTransformer:
     if getenv("HK_FLASH_ATTENTION"):
       from extra.thunder.amd.fa import flash_attention
       attn, *save = flash_attention(xq, xk, xv, is_causal=True)
-      saves.extend(save)
+      if saves is not None: saves.extend(save)
     else:
       attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True)
     attn = attn.transpose(1, 2).reshape(bsz, seqlen, -1)
 
     out, *ret = matmul(attn, wo, amax_x=amax_xo, w_inv_scale=s_o)
     if LORA: out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [out])
+    if new_amaxs is not None: new_amaxs.extend(ret[:1])
+    if saves is not None: saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
   def feed_forward(self, x:Tensor, ffn_norm:Tensor, w13:Tensor, w2:Tensor,
                    amax_x13=None, amax_x2=None, s_13=None, s_2=None):
-    new_amaxs, saves = [], []
+    new_amaxs, saves = ([], []) if FP8 else (None, None)
 
     x, rrms = rmsnorm(x, self.norm_eps)
-    saves.extend([x, rrms])
+    if saves is not None: saves.extend([x, rrms])
 
     if FP8 and getenv("FUSED_NORM_MUL_QUANTIZE", 1):
       from extra.amax.cast_amax import fused_mul_quantize_fp8
@@ -216,8 +216,8 @@ class FlatTransformer:
     else:
       x = x * ffn_norm
       x_w13, *ret = matmul(x, w13, amax_x=amax_x13, w_inv_scale=s_13)
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [x_w13])
+    if new_amaxs is not None: new_amaxs.extend(ret[:1])
+    if saves is not None: saves.extend(ret[1:] + [x_w13])
 
     if FP8 and getenv("FUSED_SILU_W13", 1):
       from extra.amax.cast_amax import fused_quantize_fp8_w13
@@ -227,8 +227,8 @@ class FlatTransformer:
     else:
       x_w1, x_w3 = x_w13[..., :self.hidden_dim], x_w13[..., self.hidden_dim:]
       out, *ret = matmul(x_w1.silu() * x_w3, w2, amax_x=amax_x2, w_inv_scale=s_2)
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [out])
+    if new_amaxs is not None: new_amaxs.extend(ret[:1])
+    if saves is not None: saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
   @function(precompile=True, precompile_backward=True)
