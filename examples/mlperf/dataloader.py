@@ -5,7 +5,7 @@ from multiprocessing import Queue, Process, shared_memory, connection, Lock, cpu
 
 import numpy as np
 from tinygrad import dtypes, Tensor
-from tinygrad.helpers import getenv, prod, Context, round_up, tqdm, OSX
+from tinygrad.helpers import getenv, prod, Context, round_up, tqdm, OSX, cache_dir
 from tinygrad.nn.state import TensorIO
 
 ### ResNet
@@ -534,16 +534,14 @@ def batch_load_train_stable_diffusion(urls:str, BS:int):
 
 # ai slop - dont fully understand
 @functools.lru_cache(maxsize=4)
-def _load_llama2_70b_lora_split(base_dir:str, split:str):
+def _load_llama2_70b_lora_split(base_dir:str, split:str)
   from datasets import load_dataset
 
-  dataset_path = Path(base_dir)
-  cache_dir = dataset_path / ".cache" / "huggingface" / "datasets"
   ds = load_dataset(
     "parquet",
-    data_files={split: str(dataset_path / "data" / f"{split}-00000-of-00001.parquet")},
+    data_files={split: str(Path(base_dir) / "data" / f"{split}-00000-of-00001.parquet")},
     split=split,
-    cache_dir=str(cache_dir),
+    cache_dir=str( cache_dir / "llama2_70b_lora_dataset"),
   )
   return np.asarray(ds["input_ids"], dtype=np.int32), np.asarray(ds["labels"], dtype=np.int64)
 
