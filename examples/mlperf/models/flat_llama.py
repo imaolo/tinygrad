@@ -181,9 +181,10 @@ class FlatTransformer:
     xqkv, x_normed, rrms, ret = norm_quantize_matmul(x, attention_norm, wqkv, s_qkv, self.norm_eps,
                                                      amax_x=amax_xqkv, grad_amax_state=grad_amax_xqkv)
     if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x)
-    saves.extend([x_normed, rrms])
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [xqkv])
+    if not LORA:
+      saves.extend([x_normed, rrms])
+      new_amaxs.extend(ret[:1])
+      saves.extend(ret[1:] + [xqkv])
     xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
     xq = xqkv[:, :, :, :self.n_rep].reshape(bsz, seqlen, self.n_heads, self.head_dim)
     xk = xqkv[:, :, :, self.n_rep].reshape(bsz, seqlen, self.n_kv_heads, self.head_dim)
@@ -195,15 +196,16 @@ class FlatTransformer:
     if getenv("HK_FLASH_ATTENTION"):
       from extra.thunder.amd.fa import flash_attention
       attn, *save = flash_attention(xq, xk, xv, is_causal=True)
-      saves.extend(save)
+      if not LORA: saves.extend(save)
     else:
       attn = xq.scaled_dot_product_attention(xk, xv, is_causal=True, enable_gqa=True)
     attn = attn.transpose(1, 2).reshape(bsz, seqlen, -1)
 
     out, *ret = matmul(attn, wo, amax_x=amax_xo, w_inv_scale=s_o, grad_amax_state=grad_amax_xo)
     if LORA: out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [out])
+    if not LORA:
+      new_amaxs.extend(ret[:1])
+      saves.extend(ret[1:] + [out])
     return (out, *new_amaxs, *saves)
 
   def feed_forward(self, x:Tensor, residual:Tensor, ffn_norm:Tensor, w13:Tensor, w2:Tensor,
@@ -213,13 +215,15 @@ class FlatTransformer:
 
     x_w13, h, x_normed, rrms, ret = add_norm_quantize_matmul(x, residual, ffn_norm, w13, s_13, self.norm_eps,
                                                              amax_x=amax_x13)
-    saves.extend([x_normed, rrms])
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [x_w13])
+    if not LORA:
+      saves.extend([x_normed, rrms])
+      new_amaxs.extend(ret[:1])
+      saves.extend(ret[1:] + [x_w13])
 
     out, ret = silu_w13_quantize_matmul(x_w13, w2, s_2, amax_x2=amax_x2, grad_amax_xw13=grad_amax_xw13, grad_amax_xout=grad_amax_xout)
-    new_amaxs.extend(ret[:1])
-    saves.extend(ret[1:] + [out])
+    if not LORA:
+      new_amaxs.extend(ret[:1])
+      saves.extend(ret[1:] + [out])
     return (out, h, *new_amaxs, *saves)
 
   @function(precompile=True, precompile_backward=True)
