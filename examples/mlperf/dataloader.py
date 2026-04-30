@@ -581,7 +581,7 @@ def iterate_llama2_70b_lora_dataset(dataset: Llama2LoRAParquetDataset, bs: int, 
           ptr = 0
         batch[bi] = dataset.input_ids[order[ptr]]
         ptr += 1
-      yield Tensor(batch, device="NPY")
+      yield Tensor(batch)
 
 def batch_load_llama2_70b_lora(bs: int, samples: int, base_dir: Path, seed: int=0, val: bool=False):
   return iterate_llama2_70b_lora_dataset(get_llama2_70b_lora_dataset(base_dir, val=val),bs, samples=samples, seed=seed,)
