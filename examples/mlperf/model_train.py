@@ -1287,7 +1287,7 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8, LORA, FP8_DTYPE
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8_DTYPE, LORA
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
@@ -1369,6 +1369,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       MLLOGGER.event(key=mllog_constants.OPT_LR_WARMUP_STEPS, value=WARMUP_STEPS)
       MLLOGGER.event(key=mllog_constants.NUM_WARMUP_STEPS, value=WARMUP_STEPS)
       MLLOGGER.event(key=mllog_constants.OPT_LR_DECAY_STEPS, value=MAX_STEPS - WARMUP_STEPS)
+      MLLOGGER.event(key=mllog_constants.OPT_LR_DECAY_SCHEDULE, value="cosine with linear warmup")
       MLLOGGER.event(key=mllog_constants.OPT_GRADIENT_CLIP_NORM, value=1.0)
   else:
     MLLOGGER = None
@@ -1470,10 +1471,11 @@ def train_llama3(llama2_70b_lora:bool=False):
     print(f"loading optim checkpoint from {fn}")
     load_state_dict(scheduler, safe_load(fn), realize=False)
 
-  fp8_amax = [t for ts in model._fp8_amax.values() for t in ts] if FP8 else []
-  fp8_inv_scales = list(model._fp8_inv_scale.values()) if FP8 else []
+  fp8_amax = [t for ts in model._fp8_amax.values() for t in ts]
+  fp8_grad_amax = [t for ts in model._fp8_grad_amax.values() for t in ts] if hasattr(model, "_fp8_grad_amax") else []
+  fp8_inv_scales = list(model._fp8_inv_scale.values())
 
-  if FP8:
+  if not llama2_70b_lora:
     model_state = get_state_dict(model)
     for wname in ["wqkv", "wo", "w13", "w2"]:
       w = model_state[wname]
@@ -1492,7 +1494,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     logits:Tensor = model(tokens) if llama2_70b_lora else model(tokens[:, :-1])
     if llama2_70b_lora: logits = logits[:, :-1]
     if getenv("FAST_CE", 0):
-      from extra.amax.cast_amax import fused_ce_loss
+      from extra.llama_kernels.fused_ce import fused_ce_loss
       loss = fused_ce_loss(logits.cast(dtypes.bfloat16), tokens[:, 1:], label_smoothing=0.0)
     else:
       loss = vocab_mask.where(-1e9, logits).sparse_categorical_crossentropy(tokens[:, 1:])
@@ -1501,7 +1503,7 @@ def train_llama3(llama2_70b_lora:bool=False):
       apply_grad(g, new_g.uop)
 
     loss_cpu = loss.flatten().float().to("CPU")
-    return loss_cpu.realize(*grads, *fp8_amax)
+    return loss_cpu.realize(*grads, *fp8_amax, *fp8_grad_amax)
 
   @TinyJit
   def optim_step():
@@ -1625,7 +1627,7 @@ def train_llama3(llama2_70b_lora:bool=False):
 
       mem_gb = GlobalCounters.mem_used / 1e9
       gflops = GlobalCounters.global_ops / 1e9 / dev_time
-      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * device_count * (4.6e15 if FP8 else 2.3e15))) * 100
+      mfu = ((6 * num_params * SEQLEN * GBS) / (dev_time * device_count * 4.6e15)) * 100
       tqdm.write(
           f"{i:5} {step_time:.3f} s step, {gbs_time:.3f} s gbs, {optim_time:.3f} s optim, {data_time:.3f} s data, {loss:.4f} loss, " \
           f"{lr:.12f} LR, {grad_norm:.6f} grad_norm, {mem_gb:.2f} GB used, {gflops:9.2f} GFLOPS, {mfu:5.2f}% MFU")
@@ -1709,7 +1711,6 @@ def train_llama3(llama2_70b_lora:bool=False):
         tqdm.write(f"target achieved after {sequences_seen} sequences")
         if MLLOGGER and RUNMLPERF:
           MLLOGGER.end(key=mllog_constants.EPOCH_STOP, metadata={mllog_constants.SAMPLES_COUNT: sequences_seen})
-          MLLOGGER.event(key=mllog_constants.TRAIN_SAMPLES, value=sequences_seen)
           MLLOGGER.end(key=mllog_constants.RUN_STOP, metadata={mllog_constants.STATUS: mllog_constants.SUCCESS})
         if getenv("CKPT"):
           if not os.path.exists(ckpt_dir := "./ckpts"): os.mkdir(ckpt_dir)
