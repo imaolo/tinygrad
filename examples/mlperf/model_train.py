@@ -1471,9 +1471,14 @@ def train_llama3(llama2_70b_lora:bool=False):
     print(f"loading optim checkpoint from {fn}")
     load_state_dict(scheduler, safe_load(fn), realize=False)
 
-  fp8_amax = [t for ts in model._fp8_amax.values() for t in ts]
-  fp8_grad_amax = [t for ts in model._fp8_grad_amax.values() for t in ts] if hasattr(model, "_fp8_grad_amax") else []
-  fp8_inv_scales = list(model._fp8_inv_scale.values())
+  if not LORA:
+    fp8_amax = [t for ts in model._fp8_amax.values() for t in ts]
+    fp8_grad_amax = [t for ts in model._fp8_grad_amax.values() for t in ts] if hasattr(model, "_fp8_grad_amax") else []
+    fp8_inv_scales = list(model._fp8_inv_scale.values())
+  else:
+    fp8_amax = []
+    fp8_grad_amax = []
+    fp8_inv_scales = []
 
   if not llama2_70b_lora:
     model_state = get_state_dict(model)

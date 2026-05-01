@@ -36,7 +36,7 @@ def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   x_clamped = x_scaled + (x_scaled.detach().clamp(-FP8_MAX, FP8_MAX) - x_scaled.detach())  # STE
   return x_clamped.cast(FP8_DTYPE), scale.float().reciprocal(), new_amax
 
-def matmul(x:Tensor, w:Tensor, fp8:bool=True, amax_x:Tensor|None=None, w_inv_scale:Tensor|None=None,
+def matmul(x:Tensor, w:Tensor, fp8:bool=False, amax_x:Tensor|None=None, w_inv_scale:Tensor|None=None,
            x_fp8:Tensor|None=None, x_scale:Tensor|None=None, x_new_amax:Tensor|None=None,
            grad_amax_state:Tensor|None=None) -> tuple[Tensor,...]:
   if not fp8:
@@ -137,14 +137,15 @@ class FlatTransformer:
     self.output = Tensor.normal(1, vocab_size, dim, mean=0.0, std=0.02, dtype=dtypes.bfloat16)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().requires_grad_(False)
 
-    def _amax(): return Tensor.full((), FP8_MAX, dtype=dtypes.float32).contiguous().requires_grad_(False)
-    names = ["xqkv", "xo", "x13", "x2"]
-    self._fp8_amax = {name: [_amax() for _ in range(n_layers)] for name in names}
-    grad_names = ["xqkv", "xo", "xw13", "xout"]
-    self._fp8_grad_amax = {name: [_amax() for _ in range(n_layers)] for name in grad_names}
-    w_names = ["wqkv", "wo", "w13", "w2"]
-    self._fp8_inv_scale = {wname: inv_scales.float().contiguous().requires_grad_(False)
-                           for wname, inv_scales in zip(w_names, self._init_inv_scales)}
+    if not LORA:
+      def _amax(): return Tensor.full((), FP8_MAX, dtype=dtypes.float32).contiguous().requires_grad_(False)
+      names = ["xqkv", "xo", "x13", "x2"]
+      self._fp8_amax = {name: [_amax() for _ in range(n_layers)] for name in names}
+      grad_names = ["xqkv", "xo", "xw13", "xout"]
+      self._fp8_grad_amax = {name: [_amax() for _ in range(n_layers)] for name in grad_names}
+      w_names = ["wqkv", "wo", "w13", "w2"]
+      self._fp8_inv_scale = {wname: inv_scales.float().contiguous().requires_grad_(False)
+                            for wname, inv_scales in zip(w_names, self._init_inv_scales)}
     del self._init_inv_scales
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
@@ -167,7 +168,8 @@ class FlatTransformer:
         w = Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, **kwargs)
     amax = w.abs().flatten(1).max(1).detach()
     scale = FP8_MAX / (amax + 1e-8)
-    self._init_inv_scales.append((amax + 1e-8) / FP8_MAX)
+    if not LORA:
+      self._init_inv_scales.append((amax + 1e-8) / FP8_MAX)
     return (w * scale.reshape(-1, 1, 1)).clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE)
 
   def attention(self, x:Tensor, freqs_cis:Tensor, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
@@ -285,22 +287,26 @@ class FlatTransformer:
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
-    a, ga, s = self._fp8_amax, self._fp8_grad_amax, self._fp8_inv_scale
+    if not LORA:
+      a, ga, s = self._fp8_amax, self._fp8_grad_amax, self._fp8_inv_scale
+    else:
+      a, ga, s = None, None, None
     for i in range(self.n_layers):
       lora_layer = {"lora_a":self.lora_a[i], "lora_a_wo":self.lora_a_wo[i],
                     "lora_b":self.lora_b[i], "lora_b_wo":self.lora_b_wo[i]} if LORA else {}
       h, *ret = self.run_layer(h, freqs_cis,
                                self.attention_norm[i], self.wqkv[i], self.wo[i],
                                self.ffn_norm[i], self.w13[i], self.w2[i],
-                               amax_xqkv=a["xqkv"][i], amax_xo=a["xo"][i],
-                               amax_x13=a["x13"][i], amax_x2=a["x2"][i],
-                               s_qkv=s["wqkv"][i], s_o=s["wo"][i],
-                               s_13=s["w13"][i], s_2=s["w2"][i],
-                               grad_amax_xqkv=ga["xqkv"][i], grad_amax_xo=ga["xo"][i],
-                               grad_amax_xw13=ga["xw13"][i], grad_amax_xout=ga["xout"][i],
+                               amax_xqkv=None, amax_xo=None,
+                               amax_x13=None, amax_x2=None,
+                               s_qkv=None, s_o=None,
+                               s_13=None, s_2=None,
+                               grad_amax_xqkv=None, grad_amax_xo=None,
+                               grad_amax_xw13=None, grad_amax_xout=None,
                                **lora_layer)
-      for name, new_val in zip(["xqkv", "xo", "x13", "x2"], ret[:5]):
-        a[name][i].assign(new_val)
+      if not LORA:
+        for name, new_val in zip(["xqkv", "xo", "x13", "x2"], ret[:5]):
+          a[name][i].assign(new_val)
 
     logits = matmul(self.norm(h), self.output[0], fp8=False)[0]
     return logits
