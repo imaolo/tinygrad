@@ -97,8 +97,6 @@ def allgather(x: Tensor) -> Tensor:
   return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
 
 class FlatTransformer:
-  fsdp_weight_names = ("wqkv", "wo", "w13", "w2")
-
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
     self.vocab_size = vocab_size
@@ -257,9 +255,11 @@ class FlatTransformer:
     assert not (mp and fsdp)
     if not mp:
       if fsdp:
-        for name in self.fsdp_weight_names:
-          getattr(self, name).shard_(device, axis=1)
-        self.fsdp=True
+        self.wqkv.shard_(device, axis=1)
+        self.wo.shard_(device, axis=1)
+        self.w13.shard_(device, axis=1)
+        self.w2.shard_(device, axis=1)
+        self.fsdp = True
       for v in get_parameters(self):
         if not isinstance(v.device, tuple):
           v.shard_(device, axis=None)
