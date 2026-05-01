@@ -166,6 +166,7 @@ class FlatTransformer:
         w = Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
       else:
         w = Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, **kwargs)
+    if LORA: return w
     amax = w.abs().flatten(1).max(1).detach()
     scale = FP8_MAX / (amax + 1e-8)
     if not LORA:
