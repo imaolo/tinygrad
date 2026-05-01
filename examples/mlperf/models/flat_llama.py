@@ -183,7 +183,7 @@ class FlatTransformer:
 
     xqkv, x_normed, rrms, ret = norm_quantize_matmul(x, attention_norm, wqkv, s_qkv, self.norm_eps,
                                                      amax_x=amax_xqkv, grad_amax_state=grad_amax_xqkv)
-    if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, xqkv)
+    if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x_normed * attention_norm)
     if not LORA:
       saves.extend([x_normed, rrms])
       new_amaxs.extend(ret[:1])
