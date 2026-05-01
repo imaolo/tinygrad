@@ -8,7 +8,6 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
 
 from extra.lr_scheduler import LRSchedulerGroup
-from examples.mlperf.helpers import get_training_state, load_training_state
 from extra.bench_log import BenchEvent, WallTimeEvent
 # TODO: fix benchmark logging and use tinygrad tqdm
 from tqdm import tqdm
@@ -1863,6 +1862,7 @@ def train_stable_diffusion():
     t6 = time.perf_counter()
 
 if __name__ == "__main__":
+  from examples.mlperf.helpers import get_training_state, load_training_state
   multiprocessing.set_start_method('spawn')
 
   if getenv("INITMLPERF"): bench_log_manager = WallTimeEvent(BenchEvent.MLPERF_INIT)
