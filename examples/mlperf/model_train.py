@@ -8,6 +8,7 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
 
 from extra.lr_scheduler import LRSchedulerGroup
+from examples.mlperf.helpers import get_training_state, load_training_state
 from extra.bench_log import BenchEvent, WallTimeEvent
 # TODO: fix benchmark logging and use tinygrad tqdm
 from tqdm import tqdm
@@ -1401,7 +1402,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   print(f"model parameters: {model_params}")
 
   # pad vocab
-  if (MP := getenv("MP", 1)) > 1 and not llama2_70b_lora: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
+  if (MP := getenv("MP", 1)) > 1: model_params['vocab_size'] = round_up(model_params['vocab_size'], 256 * MP)
   vocab_mask:Tensor = Tensor.arange(model_params['vocab_size']).reshape(1, 1, -1) >= real_vocab_size
 
   model = FlatTransformer(**model_params, max_context=SEQLEN)
@@ -1857,7 +1858,6 @@ def train_stable_diffusion():
     t6 = time.perf_counter()
 
 if __name__ == "__main__":
-  from examples.mlperf.helpers import get_training_state, load_training_state
   multiprocessing.set_start_method('spawn')
 
   if getenv("INITMLPERF"): bench_log_manager = WallTimeEvent(BenchEvent.MLPERF_INIT)
