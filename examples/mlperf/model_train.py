@@ -8,7 +8,6 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.nn.optim import LAMB, LARS, SGD, OptimizerGroup, Adam, AdamW
 
 from extra.lr_scheduler import LRSchedulerGroup
-from examples.mlperf.helpers import get_training_state, load_training_state
 from extra.bench_log import BenchEvent, WallTimeEvent
 # TODO: fix benchmark logging and use tinygrad tqdm
 from tqdm import tqdm
@@ -1863,6 +1862,8 @@ if __name__ == "__main__":
   if getenv("INITMLPERF"): bench_log_manager = WallTimeEvent(BenchEvent.MLPERF_INIT)
   elif getenv("RUNMLPERF"): bench_log_manager = WallTimeEvent(BenchEvent.MLPERF_RUN)
   else: bench_log_manager = contextlib.nullcontext()
+
+  from examples.mlperf.helpers import get_training_state, load_training_state
 
   with Tensor.train():
     for m in getenv("MODEL", "resnet,retinanet,unet3d,rnnt,bert,maskrcnn,stable_diffusion").split(","):
