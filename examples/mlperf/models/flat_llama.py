@@ -230,11 +230,11 @@ class FlatTransformer:
   def run_layer(self, x:Tensor, freqs_cis:Tensor,
                 attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 ffn_norm:Tensor, w13:Tensor, w2:Tensor,
-                amax_xqkv:Tensor, amax_xo:Tensor,
-                amax_x13:Tensor, amax_x2:Tensor,
-                s_qkv:Tensor, s_o:Tensor, s_13:Tensor, s_2:Tensor,
-                grad_amax_xqkv:Tensor, grad_amax_xo:Tensor,
-                grad_amax_xw13:Tensor, grad_amax_xout:Tensor,
+                amax_xqkv:Tensor|None=None, amax_xo:Tensor|None=None,
+                amax_x13:Tensor|None=None, amax_x2:Tensor|None=None,
+                s_qkv:Tensor|None=None, s_o:Tensor|None=None, s_13:Tensor|None=None, s_2:Tensor|None=None,
+                grad_amax_xqkv:Tensor|None=None, grad_amax_xo:Tensor|None=None,
+                grad_amax_xw13:Tensor|None=None, grad_amax_xout:Tensor|None=None,
                 lora_a:Tensor|None=None, lora_a_wo:Tensor|None=None,
                 lora_b:Tensor|None=None, lora_b_wo:Tensor|None=None):
     if self.fsdp:
@@ -285,7 +285,7 @@ class FlatTransformer:
   def __call__(self, tokens:Tensor):
     h = self.tok_embeddings(tokens)
     freqs_cis = self.freqs_cis.cast(h.dtype)[:, :tokens.shape[1], :, :, :]
-    a, ga, s = self._fp8_amax, self._fp8_grad_amax, self._fp8_inv_scale
+    if QUANTIZING: a, ga, s = self._fp8_amax, self._fp8_grad_amax, self._fp8_inv_scale
     for i in range(self.n_layers):
       lora_layer = dict(lora_a=self.lora_a[i], lora_a_wo=self.lora_a_wo[i],
                         lora_b=self.lora_b[i], lora_b_wo=self.lora_b_wo[i]) if LORA else {}
@@ -299,8 +299,9 @@ class FlatTransformer:
                                self.attention_norm[i], self.wqkv[i], self.wo[i],
                                self.ffn_norm[i], self.w13[i], self.w2[i],
                                **quant_layer, **lora_layer)
-      for name, new_val in zip(["xqkv", "xo", "x13", "x2"], ret[:5]):
-        a[name][i].assign(new_val)
+      if QUANTIZING:
+        for name, new_val in zip(["xqkv", "xo", "x13", "x2"], ret[:5]):
+          a[name][i].assign(new_val)
 
     logits = matmul(self.norm(h), self.output[0], fp8=False)[0]
     return logits
