@@ -19,8 +19,6 @@ from extra.models.llama import apply_rotary_emb, precompute_freqs_cis
 from extra.llama_kernels.rmsnorm import rmsnorm
 from extra.llama_kernels import FP8_MAX, local_abs_max
 
-LORA = getenv("LORA", 0)
-
 ASM_GEMM = getenv("ASM_GEMM", 0)
 FUSED_INPUT_QUANTIZE = getenv("FUSED_INPUT_QUANTIZE", 0)
 FUSED_ADD_NORM_MUL_QUANTIZE = getenv("FUSED_ADD_NORM_MUL_QUANTIZE", 0)
@@ -106,7 +104,7 @@ class FlatTransformer:
   fsdp_wnames: ClassVar[tuple[str,...]] = ("wqkv", "wo", "w13", "w2")
 
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
-               max_context:int=1024, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
+               max_context:int=1024, use_lora:bool=False, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
     self.vocab_size = vocab_size
     self.n_layers = n_layers
     self.n_heads = n_heads
@@ -114,9 +112,11 @@ class FlatTransformer:
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
     self.hidden_dim = hidden_dim
-    self.lora_scale = lora_alpha / lora_rank
-    self.lora_dropout = lora_dropout
     self.fsdp = False
+    self.use_lora = use_lora
+    if self.use_lora:
+      self.lora_scale = lora_alpha / lora_rank
+      self.lora_dropout = lora_dropout
 
     scaled_std = 0.02 / math.sqrt(2 * n_layers)
 
@@ -125,7 +125,7 @@ class FlatTransformer:
     self.wo = self.lin_per_layer(wo_dim:=(self.n_heads * self.head_dim), dim, std=scaled_std)
 
     # LoRA
-    if LORA:
+    if self.use_lora:
       self.lora_a, self.lora_b = self.create_lora_params(dim, wqkv_dim, lora_rank)
       self.lora_a_wo, self.lora_b_wo = self.create_lora_params(dim, wo_dim, lora_rank)
 
@@ -196,7 +196,7 @@ class FlatTransformer:
 
     xqkv, x_normed, rrms, (new_amax, *s) = norm_quantize_matmul(x, attention_norm, wqkv, s_qkv, self.norm_eps,
                                                                   amax_x=amax_xqkv, grad_amax_state=grad_amax_xqkv)
-    if LORA: xqkv = xqkv + self.run_lora(lora_a, lora_b, x_normed * attention_norm)
+    if self.use_lora: xqkv = xqkv + self.run_lora(lora_a, lora_b, x_normed * attention_norm)
     amaxs.append(new_amax)
     saves.extend([x_normed, rrms, *s, xqkv])
     xqkv = xqkv.reshape(bsz, seqlen, self.n_kv_heads, self.n_rep + 2, self.head_dim)
@@ -216,7 +216,7 @@ class FlatTransformer:
     attn = attn.reshape(bsz, seqlen, -1)
 
     out, new_amax, *s = matmul(attn, wo, amax_x=amax_xo, w_inv_scale=s_o, grad_amax_state=grad_amax_xo)
-    if LORA: out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
+    if self.use_lora: out = out + self.run_lora(lora_a_wo, lora_b_wo, attn)
     amaxs.append(new_amax)
     saves.extend([*s, out])
     return out, amaxs, saves
@@ -278,7 +278,7 @@ class FlatTransformer:
         if not isinstance(v.device, tuple):
           v.shard_(device, axis=None)
     else:
-      assert not LORA, "MP + LORA unsupported"
+      assert not self.use_lora, "MP + LoRA unsupported"
       # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
       self.wqkv.shard_(device, axis=1).realize()          # (n_layers, out, dim) shard out
       self.wo.shard_(device, axis=2).realize()            # (n_layers, dim, in) shard in
@@ -307,7 +307,7 @@ class FlatTransformer:
     a, ga, s = self._fp8_amax, self._fp8_grad_amax, self._fp8_inv_scale
     for i in range(self.n_layers):
       lora_kwargs = dict(lora_a=self.lora_a[i], lora_a_wo=self.lora_a_wo[i],
-                         lora_b=self.lora_b[i], lora_b_wo=self.lora_b_wo[i]) if LORA else {}
+                         lora_b=self.lora_b[i], lora_b_wo=self.lora_b_wo[i]) if self.use_lora else {}
       attn_kwargs = dict(attention_norm=self.attention_norm[i], wqkv=self.wqkv[i], wo=self.wo[i],
                          amax_xqkv=a["xqkv"][i], amax_xo=a["xo"][i], s_qkv=s["wqkv"][i], s_o=s["wo"][i],
                          grad_amax_xqkv=ga["xqkv"][i], grad_amax_xo=ga["xo"][i])

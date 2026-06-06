@@ -1286,12 +1286,10 @@ def train_llama2_70b_lora():
   train_llama3(True)
 
 def train_llama3(llama2_70b_lora:bool=False):
-  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8_DTYPE, LORA
+  from examples.mlperf.models.flat_llama import FlatTransformer, apply_grad, FP8_DTYPE
   from examples.llama3 import MODEL_PARAMS
   from examples.mlperf.lr_schedulers import CosineAnnealingLRWithWarmup
   from examples.mlperf.optim import GradAccClipAdamW
-
-  if llama2_70b_lora: assert LORA
 
   INITMLPERF = getenv("INITMLPERF")
   RUNMLPERF = getenv("RUNMLPERF")
@@ -1403,7 +1401,7 @@ def train_llama3(llama2_70b_lora:bool=False):
     wandb.init(config=config, **wandb_args, project=getenv("WANDB_PROJ", "MLPerf-LLaMA3"))
 
   model_params = dict(MODEL_PARAMS[getenv("LLAMA3_SIZE", "8B")]["args"] if not llama2_70b_lora else LLAMA2_70B_ARGS)
-  if llama2_70b_lora: model_params |= {"lora_rank": LORA_RANK, "lora_alpha": LORA_ALPHA}
+  if llama2_70b_lora: model_params |= {"use_lora": True, "lora_rank": LORA_RANK, "lora_alpha": LORA_ALPHA}
   # vocab_size from the mixtral tokenizer
   if not SMALL: model_params |= {"vocab_size": 32000}
   real_vocab_size = model_params['vocab_size']
