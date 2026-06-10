@@ -305,6 +305,10 @@ class FlatTransformer:
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
       self.output.shard_(device, axis=1).realize()
       self.freqs_cis.shard_(device, axis=None).realize()
+      for amax_dict in (self._fp8_amax, self._fp8_grad_amax):
+        for name in amax_dict:
+          for i in range(len(amax_dict[name])):
+            amax_dict[name][i] = amax_dict[name][i].to(device).contiguous().is_param_(False)
 
   def __call__(self, tokens:Tensor, save:bool=True):
     h = self.tok_embeddings(tokens)
