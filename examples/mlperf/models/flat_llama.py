@@ -1,5 +1,4 @@
 import math, os
-from typing import ClassVar
 if __name__ == "__main__":
   os.environ["DEFAULT_FLOAT"] = "bfloat16"
   os.environ["OPTIM_DTYPE"] = "bfloat16"
