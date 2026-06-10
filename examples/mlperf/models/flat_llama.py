@@ -29,11 +29,12 @@ COLUMNWISE_WEIGHT_SCALE = getenv("COLUMNWISE_WEIGHT_SCALE", 0)
 FP8_DTYPE = dtypes.fp8e4m3
 FP8_GRAD_DTYPE = dtypes.fp8e5m2
 
-def quantize_fp8_weight(w:Tensor) -> tuple[Tensor, Tensor]:
-  amax = w.abs().flatten(1).max(1).detach()
+def quantize_fp8_weight(w:Tensor, n_layers:int, out_features: int) -> tuple[Tensor, Tensor]:
+  amax = (w.abs().max(axis=2) if COLUMNWISE_WEIGHT_SCALE else w.abs().flatten(1).max(1)).detach()
   scale = FP8_MAX / (amax + 1e-8)
-  return (w * scale.reshape(-1, 1, 1)).clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE), \
-         ((amax + 1e-8) / FP8_MAX).float().contiguous().requires_grad_(False)
+  inv_scale = (amax + 1e-8) / FP8_MAX
+  scale_b = scale.reshape(n_layers, out_features, 1) if COLUMNWISE_WEIGHT_SCALE else scale.reshape(-1, 1, 1)
+  return (w * scale_b).clamp(-FP8_MAX, FP8_MAX).cast(FP8_DTYPE), inv_scale
 
 def quantize_fp8(x:Tensor, amax_state:Tensor|None=None):
   new_amax = (local_abs_max(x) if isinstance(x.device, tuple) else x.abs().max()).detach().cast(dtypes.float32)
@@ -106,7 +107,6 @@ def allgather(x: Tensor) -> Tensor:
   return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
 
 class FlatTransformer:
-  fsdp_wnames: ClassVar[tuple[str,...]] = ("wqkv", "wo", "w13", "w2")
 
   def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size:int, n_kv_heads:int|None=None, rope_theta:int=10000,
                max_context:int=1024, use_lora:bool=False, lora_rank:int=16, lora_alpha:float=32.0, lora_dropout:float=0.1):
@@ -117,7 +117,7 @@ class FlatTransformer:
     self.head_dim = dim // n_heads
     self.n_rep = self.n_heads // self.n_kv_heads
     self.hidden_dim = hidden_dim
-    self.fsdp = False
+    self.fsdp_wnames:tuple[str, ...] = ()
     self.use_lora = use_lora
     if self.use_lora:
       self.lora_scale = lora_alpha / lora_rank
@@ -172,8 +172,9 @@ class FlatTransformer:
     self._fp8_inv_scale = {}
     self._fp8_next_inv_scale = {}
     for wname in w_names:
-      fp8_weight, inv_scale = quantize_fp8_weight(getattr(self, wname))
-      getattr(self, wname).replace(fp8_weight)
+      w:Tensor = getattr(self, wname)
+      fp8_weight, inv_scale = quantize_fp8_weight(w, self.n_layers, w.shape[1])
+      w.replace(fp8_weight)
       self._fp8_inv_scale[wname] = self._fp8_next_inv_scale[wname] = inv_scale
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
@@ -262,9 +263,8 @@ class FlatTransformer:
 
   @function(precompile=True, precompile_backward=True)
   def run_layer(self, x:Tensor, freqs_cis:Tensor, attn_kwargs:dict, ffn_kwargs:dict, lora_kwargs:dict, save:bool=True):
-    if self.fsdp:
-      for fsdp_wname in self.fsdp_wnames:
-        in_dict[fsdp_wname] = allgather((in_dict:=(attn_kwargs if fsdp_wname in attn_kwargs else ffn_kwargs))[fsdp_wname])
+    for fsdp_wname in self.fsdp_wnames:
+      in_dict[fsdp_wname] = allgather((in_dict:=(attn_kwargs if fsdp_wname in attn_kwargs else ffn_kwargs))[fsdp_wname])
     attn, attn_amaxs, attn_saves = self.attention(x, freqs_cis, **attn_kwargs, **lora_kwargs)
     ffn, h, ffn_amaxs, ffn_saves = self.feed_forward(x, attn, **ffn_kwargs)
     h = h + ffn
@@ -273,28 +273,25 @@ class FlatTransformer:
     else: return (h, *amaxs)
 
   def shard(self, device:tuple[str, ...], mp:bool=False, fsdp:bool=False):
-    from tinygrad.nn.state import get_parameters
     assert not (mp and fsdp)
+    # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
+    def _shard_fp8(name:str, axis:int):
+      getattr(self, name).shard_(device, axis=axis)
+      scale_axis = (1 if axis == 1 else None) if COLUMNWISE_WEIGHT_SCALE else None
+      self._fp8_inv_scale[name] = self._fp8_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
+      self._fp8_next_inv_scale[name] = self._fp8_next_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
+      Tensor.realize(getattr(self, name), self._fp8_inv_scale[name], self._fp8_next_inv_scale[name])
+
     if not mp:
+      from tinygrad.nn.state import get_state_dict
       if fsdp:
-        assert not SPLIT_W13, "fsdp + split w13 unsupported"
-        self.wqkv.shard_(device, axis=1)
-        self.wo.shard_(device, axis=1)
-        self.w13.shard_(device, axis=1)
-        self.w2.shard_(device, axis=1)
-        self.fsdp = True
-      for v in get_parameters(self):
-        if not isinstance(v.device, tuple):
-          v.shard_(device, axis=None)
+        fsdp_wnames = ["wqkv", "wo", "w2"]
+        fsdp_wnames += ["x1", "x3"] if SPLIT_W13 else ["x13"]
+        self.fsdp_wnames = tuple(fsdp_wnames)
+      for k, v in get_state_dict(self).items():
+        if k in self.fsdp_wnames: _shard_fp8(k, 1)
+        else: v.shard(device, axis=None)
     else:
-      assert not self.use_lora, "MP + LoRA unsupported"
-      # flat per-layer weights: axis 0 is n_layers, so shard axes are +1 vs per-layer Transformer
-      def _shard_fp8(name:str, axis:int):
-        getattr(self, name).shard_(device, axis=axis)
-        scale_axis = (1 if axis == 1 else None) if COLUMNWISE_WEIGHT_SCALE else None
-        self._fp8_inv_scale[name] = self._fp8_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
-        self._fp8_next_inv_scale[name] = self._fp8_next_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
-        Tensor.realize(getattr(self, name), self._fp8_inv_scale[name], self._fp8_next_inv_scale[name])
       _shard_fp8("wqkv", 1)          # (n_layers, out, dim) shard out
       _shard_fp8("wo", 2)            # (n_layers, dim, in) shard in
       if SPLIT_W13:
@@ -309,10 +306,6 @@ class FlatTransformer:
       self.tok_embeddings.weight.shard_(device, axis=0).realize()
       self.output.shard_(device, axis=1).realize()
       self.freqs_cis.shard_(device, axis=None).realize()
-      for amax_dict in (self._fp8_amax, self._fp8_grad_amax):
-        for name in amax_dict:
-          for i in range(len(amax_dict[name])):
-            amax_dict[name][i] = amax_dict[name][i].to(device).contiguous().is_param_(False)
 
   def __call__(self, tokens:Tensor, save:bool=True):
     h = self.tok_embeddings(tokens)
