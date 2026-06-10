@@ -171,7 +171,8 @@ class FlatTransformer:
       w:Tensor = getattr(self, wname)
       fp8_weight, inv_scale = quantize_fp8_weight(w, self.n_layers, w.shape[1])
       w.replace(fp8_weight)
-      self._fp8_inv_scale[wname] = self._fp8_next_inv_scale[wname] = inv_scale
+      self._fp8_inv_scale[wname] = inv_scale.float().contiguous().is_param_(False)
+      self._fp8_next_inv_scale[wname] = inv_scale.float().contiguous().is_param_(False)
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
     a = self.lin_per_layer(in_dim, rank, requires_grad=True, use_kaiming=True)
