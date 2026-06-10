@@ -261,7 +261,8 @@ class FlatTransformer:
   @function(precompile=True, precompile_backward=True)
   def run_layer(self, x:Tensor, freqs_cis:Tensor, attn_kwargs:dict, ffn_kwargs:dict, lora_kwargs:dict, save:bool=True):
     for fsdp_wname in self.fsdp_wnames:
-      in_dict[fsdp_wname] = allgather((in_dict:=(attn_kwargs if fsdp_wname in attn_kwargs else ffn_kwargs))[fsdp_wname])
+      kwargs = attn_kwargs if fsdp_wname in attn_kwargs else ffn_kwargs
+      kwargs[fsdp_wname] = allgather(kwargs[fsdp_wname])
     attn, attn_amaxs, attn_saves = self.attention(x, freqs_cis, **attn_kwargs, **lora_kwargs)
     ffn, h, ffn_amaxs, ffn_saves = self.feed_forward(x, attn, **ffn_kwargs)
     h = h + ffn
