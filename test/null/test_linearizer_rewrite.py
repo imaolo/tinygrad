@@ -8,7 +8,7 @@ class TestLinearizerRewrite(unittest.TestCase):
   def test_reduction(self):
     t = Tensor.ones((64,64), device="NULL").contiguous().realize()
     out = (t*2).sum(axis=1)
-    with Context(SPLIT_REDUCEOP=0, DEVECTORIZE=0):
+    with Context(SPLIT_REDUCEOP=0):
       si = out.schedule_linear().src[-1]
       opts_to_apply = []
       opts_to_apply.append(Opt(OptOps.UPCAST, 0, 4))
@@ -18,8 +18,8 @@ class TestLinearizerRewrite(unittest.TestCase):
       print(prg.src[3].arg)
 
   def test_arange(self):
-    out = Tensor.arange(32, device="NULL")
-    with Context(SPLIT_REDUCEOP=0, DEVECTORIZE=0):
+    out = Tensor.arange(32).clone("NULL")
+    with Context(SPLIT_REDUCEOP=0):
       si = out.schedule_linear().src[-1]
       opts_to_apply = []
       opts_to_apply.append(Opt(OptOps.UPCAST, 0, 4))
@@ -28,7 +28,7 @@ class TestLinearizerRewrite(unittest.TestCase):
       print(prg.src[3].arg)
 
   def test_kernel_info(self):
-    out = Tensor.arange(4, device="NULL")
+    out = Tensor.arange(4).clone("NULL")
     si = out.schedule_linear().src[-1]
 
     ast = si.src[0].replace(arg=KernelInfo(opts_to_apply=()))

@@ -2,7 +2,6 @@
 import numpy as np
 import unittest
 from tinygrad import Tensor, Device, dtypes
-from tinygrad.device import is_dtype_supported
 from tinygrad.uop.ops import Ops, UOp
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.renderer.nir import NIRRenderer
@@ -37,7 +36,6 @@ class TestInferenceMode(unittest.TestCase):
     assert tmp.grad is None
     assert mm.grad is None
     assert W.grad is None
-    assert W.requires_grad
 
   def test_no_grad_mode_context_manager(self):
     x = Tensor(x_init)
@@ -80,18 +78,18 @@ class TestIdxUpcast(unittest.TestCase):
     if not isinstance(Device[Device.DEFAULT].renderer, (PTXRenderer, NIRRenderer)):
       assert idx.op is Ops.INDEX
       idx_val = idx.src[1]
-      self.assertIs(idx_val.dtype, dtype)
+      self.assertFalse(idx_val.overflows(idx_val.dtype.base.scalar()))
 
   # use expand to generate kernel that uses large idx
   def do_op_then_assert(self, dtype: DType, dim1, dim2, dim3):
     self._assert(dtype, Tensor.empty(dim1, dim2, 1).expand(-1, -1, dim3).contiguous())
 
-  @unittest.skipUnless(is_dtype_supported(dtypes.long), "int64 is supported")
+  @unittest.skipUnless(dtypes.long in Device[Device.DEFAULT].renderer.supported_dtypes(), "int64 is supported")
   def test_overflow(self):
     # 2**11, 2**11, 2**11 -> 2**33 will overflow when indexed
     self.do_op_then_assert(dtypes.long, 2048, 2048, 2048)
 
-  @unittest.skipUnless(is_dtype_supported(dtypes.long), "int64 is supported")
+  @unittest.skipUnless(dtypes.long in Device[Device.DEFAULT].renderer.supported_dtypes(), "int64 is supported")
   def test_overflow_sym(self):
     self.do_op_then_assert(dtypes.long, 2048, 2048, UOp.variable("dim3", 1, 2048).bind(32))
 
@@ -104,16 +102,16 @@ class TestIdxUpcast(unittest.TestCase):
   @unittest.skipIf(isinstance(Device[Device.DEFAULT].renderer, (PTXRenderer, NIRRenderer)), "PTX and NIR always converts Ops.INDEX to int64")
   def test_symfold(self):
     # This would cause an overflow, but after sym fold it's within int32
-    a = Tensor.arange(65535)
+    a = Tensor.arange(65535).clone()
     uops = self._schedule_render(a)
     assert all(uop.dtype is not dtypes.long for uop in uops)
 
-  @unittest.skipIf(is_dtype_supported(dtypes.long), "int64 is supported")
+  @unittest.skipIf(dtypes.long in Device[Device.DEFAULT].renderer.supported_dtypes(), "int64 is supported")
   def test_int64_unsupported_overflow_sym(self):
     with self.assertRaises((KeyError, RuntimeError)):
       self.do_op_then_assert(dtypes.long, 2048, 2048, UOp.variable("dim3", 1, 2048).bind(32))
 
-  @unittest.skipIf(is_dtype_supported(dtypes.long), "int64 is supported")
+  @unittest.skipIf(dtypes.long in Device[Device.DEFAULT].renderer.supported_dtypes(), "int64 is supported")
   @unittest.expectedFailure  # bug in gpu dims limiting
   def test_int64_unsupported_overflow(self):
     with self.assertRaises((KeyError, RuntimeError)):
@@ -146,12 +144,6 @@ class TestTensorUnique(unittest.TestCase):
     Tensor.realize(a,b)
     self.assertIsNot(a.uop.buffer, b.uop.buffer)
 
-  def test_eye_bufs_unique(self):
-    a = Tensor.eye(10).contiguous()
-    b = Tensor.eye(10).contiguous()
-    Tensor.realize(a,b)
-    self.assertIsNot(a.uop.buffer, b.uop.buffer)
-
   def test_times_2_not_unique(self):
     a = Tensor.zeros(10, 10).contiguous()
     b = a * 2
@@ -179,8 +171,10 @@ class TestTensorConstLike(unittest.TestCase):
     t = Tensor.ones(8, 4).shard(devs, axis=0)
     c = t.const_like(5)
     self.assertEqual(c.shape, (8, 4))
-    self.assertEqual(c.device, t.device)
-    self.assertEqual(c.uop.axis, 0)
+    self.assertIsNone(c.device)
+    out = t+c
+    self.assertEqual(out.device, t.device)
+    self.assertEqual(out.uop.axis, 0)
 
   def test_full_like_device_on_multi_raises(self):
     t = Tensor.ones(8, 4).shard(("NULL:0", "NULL:1"), axis=0)

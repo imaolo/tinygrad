@@ -16,10 +16,10 @@ class TestArange(unittest.TestCase):
     return estimate_uop(linear.src[-1]).ops
 
   def test_arange_complexity(self):
-    self.assertEqual(self._get_flops(Tensor.arange(256), np.arange(256)), 0)
-    self.assertEqual(self._get_flops(Tensor.arange(2560), np.arange(2560)), 0)
+    self.assertEqual(self._get_flops(Tensor.arange(256).clone(), np.arange(256)), 0)
+    self.assertEqual(self._get_flops(Tensor.arange(2560).clone(), np.arange(2560)), 0)
 
-  @unittest.skipIf(Device.DEFAULT == "CL", "TODO: fails on CI CL")
+  @unittest.skipIf(Device.DEFAULT == "CL", "flaky in CI")
   def test_arange_cumsum(self):
     np.testing.assert_equal(Tensor.arange(513).cumsum(0).numpy(), np.arange(513).cumsum())
 
@@ -30,7 +30,7 @@ class TestArange(unittest.TestCase):
   def test_eye_complexity(self):
     with Context(NOOPT=1):
       # NOTE: not every backend supports CMPEQ
-      self.assertLessEqual(self._get_flops(Tensor.eye(2560).contiguous(), np.eye(2560)), 2*2560*2560)
+      self.assertLessEqual(self._get_flops(Tensor.eye(2560).clone(), np.eye(2560)), 2*2560*2560)
 
   @unittest.skipIf(isinstance(Device[Device.DEFAULT].renderer, PTXRenderer), "PTX indexing is weird")
   def test_tri_complexity(self):
@@ -64,7 +64,7 @@ class TestIndexing(unittest.TestCase):
       rng = Tensor.arange(DSET, dtype=dtypes.int).reshape(1, 1, DSET, 1).expand(4, DDIM, DSET, 1)
       idxs = idxs.reshape(4,1,1,1).expand(4, DDIM, DSET, 1)
       reshape_dataset = dataset.T.reshape(1, DDIM, DSET, 1).expand(4, DDIM, DSET, 1)
-      full = (rng==idxs).where(reshape_dataset, Tensor.zeros(4, DDIM, DSET, 1))
+      full = (rng==idxs).where(reshape_dataset, Tensor.zeros(4, DDIM, DSET, 1, buffer=False))
       X = full.sum(axis=(2,3))
       linear, var_vals = X.linear_with_vars()
       self.assertEqual(len(linear.src), 1)
@@ -125,8 +125,8 @@ class TestIndexing(unittest.TestCase):
   def test_index_mnist(self, noopt=1, op_limit=512*784*13, split_reduceop=0):
     # WEBGPU generates more ops due to bitpacking of < 4-byte dtypes
     if Device.DEFAULT == "WEBGPU": op_limit *= 15
-    from tinygrad.nn.datasets import mnist
-    X_train, Y_train, _, _ = mnist()
+    # from tinygrad.nn.datasets import mnist
+    X_train, Y_train = Tensor.randint(DSET, 1, 28, 28, dtype='uchar').realize(), Tensor.randint(DSET, dtype='uchar').realize()
     with Context(NOOPT=noopt, SPLIT_REDUCEOP=split_reduceop):
       samples = Tensor.randint(getenv("BS", 512), high=X_train.shape[0]).realize()
       GlobalCounters.reset()

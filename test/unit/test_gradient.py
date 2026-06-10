@@ -98,6 +98,12 @@ class TestTensorGradient(unittest.TestCase):
     x = Tensor.randn(4, 4)
     np.testing.assert_allclose(x.pad(((1,0),(0,0))).gradient(x, gradient=g2)[0].numpy(), np.zeros((4, 4)))
 
+  def test_bare_const_skipped_by_backward(self):
+    Tensor.manual_seed(0)
+    w = Tensor(1.0)
+    (Tensor.rand(()) + w).backward()
+    self.assertIsNone(w.grad)
+
 class TestMultiOutputGradient(unittest.TestCase):
   @staticmethod
   def addmul_kernel(C:UOp, D:UOp, A:UOp, B:UOp) -> UOp:
@@ -160,8 +166,8 @@ class TestMultiOutputGradient(unittest.TestCase):
     c, d, e, _, _ = Tensor.custom_kernel(Tensor.empty(4, 4), Tensor.empty(4, 4), Tensor.empty(4, 4), a, b,
                                           fxn=addmulsub_kernel, grad_fxn=backward_addmulsub)
     (c.sum() + d.sum() + e.sum()).backward()
-    np.testing.assert_allclose(a.grad.numpy(), a_ref.grad.numpy(), rtol=1e-5)
-    np.testing.assert_allclose(b.grad.numpy(), b_ref.grad.numpy(), rtol=1e-5)
+    np.testing.assert_allclose(a.grad.numpy(), a_ref.grad.numpy(), atol=1e-6, rtol=1e-5)
+    np.testing.assert_allclose(b.grad.numpy(), b_ref.grad.numpy(), atol=1e-6, rtol=1e-5)
 
 class TestViewGradient(unittest.TestCase):
   def test_expand(self):

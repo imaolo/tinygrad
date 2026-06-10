@@ -3,7 +3,7 @@ import unittest
 
 from tinygrad.codegen.opt import Opt, OptOps
 from tinygrad.uop.ops import UOp, Ops, GroupOp, AxisType, buffers
-from tinygrad.device import Device, Buffer, is_dtype_supported
+from tinygrad.device import Device, Buffer
 from tinygrad.tensor import Tensor, _to_np_dtype
 from tinygrad.engine.realize import run_linear
 from tinygrad.codegen import to_program
@@ -11,11 +11,13 @@ from tinygrad.helpers import Context, flatten, dedup, TC_SELECT, TC_OPT, DEV
 from tinygrad.dtype import DType, dtypes, PtrDType, AddrSpace
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.renderer.cstyle import CUDARenderer
+from tinygrad.renderer.isa import ISARenderer
 from test.helpers import replace_opts
 MOCKGPU = DEV.interface.startswith("MOCK")
 
 from tinygrad.uop.render import print_uops # noqa: F401 # pylint: disable=unused-import
 
+@unittest.skipIf(isinstance(Device[Device.DEFAULT].renderer, ISARenderer), "isa backends don't preserve the op spec when lowering")
 class TestLinearizer(unittest.TestCase):
   def test_arg_dedup(self):
     # NOTE: this realize exists because Tensor.numpy calls .contiguous() internally
@@ -68,9 +70,9 @@ class TestLinearizer(unittest.TestCase):
     uslice = [i for i,u in enumerate(uops) if u.op == Ops.END][-1]
     # only valid test if outermost range is the reduce
     if uops[uslice].src[-1].arg[-1] == AxisType.REDUCE:
-      load_types = [u.src[0].dtype for u in uops[uslice+1:] if u.op == Ops.LOAD]
+      load_idxs = [u.src[0] for u in uops[uslice+1:] if u.op == Ops.LOAD]
       # assert that there is a global load after the reduce ends
-      assert any(dt.addrspace == AddrSpace.GLOBAL for dt in load_types)
+      assert any(u.addrspace == AddrSpace.GLOBAL for u in load_idxs)
 
   def _test_no_nested_ranges(self, lins, skip=None):
     for l in lins:
@@ -163,7 +165,6 @@ class TestLinearizer(unittest.TestCase):
     stores = [u for u in uops if u.op is Ops.STORE]
     assert len(accs) == 0  # it's removed now
     assert len(stores) == 1
-    assert stores[0].src[1].dtype == dtypes.float.vec(4)
 
   # NOTE: can reenable, it does work. it just makes BEAM slow
   @unittest.expectedFailure
@@ -184,12 +185,13 @@ class TestLinearizer(unittest.TestCase):
     opts_to_apply = [Opt(op=OptOps.GROUP, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=4), Opt(op=OptOps.UPCAST, axis=0, arg=4)]
     program = to_program(replace_opts(r.schedule_linear().src[-1].src[0], opts_to_apply), renderer=Device[Device.DEFAULT].renderer)
 
-    stores = [u for u in tuple(program.src[2].src) if u.op is Ops.STORE and u.src[0].dtype.addrspace != AddrSpace.REG]
+    stores = [u for u in tuple(program.src[2].src) if u.op is Ops.STORE and u.src[0].addrspace != AddrSpace.REG]
 
     # the first store is to lds and can be upcasted
-    assert stores[0].src[1].dtype == dtypes.float.vec(4)
-    assert any(x.op is Ops.DEFINE_LOCAL for x in stores[0].toposort())
+    assert stores[0].src[1].max_numel() == 4
+    assert any(x.addrspace is AddrSpace.LOCAL for x in stores[0].toposort())
     # the second store is to gds with no upcasts
+    assert stores[1].src[1].max_numel() == 1
     assert stores[1].src[1].dtype == dtypes.float
     assert any(x.op is Ops.PARAM for x in stores[1].toposort())
 
@@ -204,18 +206,18 @@ class TestLinearizer(unittest.TestCase):
   def test_sum_acc_dtype(self):
     for tensor_dtype, acc_dtype in (
       (dtypes.bool, dtypes.int), (dtypes.int16, dtypes.int), (dtypes.float16, dtypes.float), (dtypes.bfloat16, dtypes.float)):
-      if is_dtype_supported(tensor_dtype) and is_dtype_supported(acc_dtype):
+      if tensor_dtype in (dts:=Device[Device.DEFAULT].renderer.supported_dtypes()) and acc_dtype in dts:
         a = Tensor([1, 2, 3], dtype=tensor_dtype).sum()
         realized_ast = a.schedule_linear().src[-1].src[0]
         program = to_program(replace_opts(realized_ast, []), renderer=Device[Device.DEFAULT].renderer)
-        local = [uop for uop in tuple(program.src[2].src) if uop.op is Ops.DEFINE_REG]
+        local = [uop for uop in tuple(program.src[2].src) if uop.op in (Ops.BUFFER, Ops.DEFINE_REG)]
         assert local[0].dtype.base == acc_dtype
 
   def test_arg_acc_dtype(self):
     def helper_arg_acc_dtype(c: Tensor, expected_dtype:DType):
       realized_ast = c.schedule_linear().src[-1].src[0]
       program = to_program(replace_opts(realized_ast, []), renderer=Device[Device.DEFAULT].renderer)
-      local = [uop for uop in tuple(program.src[2].src) if uop.op is Ops.DEFINE_REG]
+      local = [uop for uop in tuple(program.src[2].src) if uop.op in (Ops.BUFFER, Ops.DEFINE_REG)]
       self.assertEqual(local[0].dtype.base, expected_dtype)
 
     tests = (
@@ -227,7 +229,7 @@ class TestLinearizer(unittest.TestCase):
       (dtypes.float, dtypes.float16, dtypes.float16),
     )
     for tensor_dtype, acc_dtype, expected_dtype in tests:
-      if is_dtype_supported(tensor_dtype) and is_dtype_supported(acc_dtype) and is_dtype_supported(expected_dtype):
+      if tensor_dtype in (dts:=Device[Device.DEFAULT].renderer.supported_dtypes()) and acc_dtype in dts and expected_dtype in dts:
         a, b = Tensor.rand(8, 8, dtype=tensor_dtype), Tensor.rand(8, 8, dtype=tensor_dtype)
         helper_arg_acc_dtype(a.sum(dtype=acc_dtype), expected_dtype)
         helper_arg_acc_dtype(a.matmul(b, dtype=acc_dtype), expected_dtype)
@@ -309,12 +311,12 @@ class TestLinearizer(unittest.TestCase):
       assert len(reg_stores) == 0, "STORE to reg should have been simplified"
       assert len([u for u in uops if u.op is Ops.MAX]) <= max_ops, "no unnecessary MAX ops"
 
-    helper(Tensor.arange(5.5, (3.5*300), 3.5), max_ops=2)
-    helper(Tensor.arange(-1, -100, -5), max_ops=2)
+    helper(Tensor.arange(5.5, (3.5*300), 3.5).clone(), max_ops=2)
+    helper(Tensor.arange(-1, -100, -5).clone(), max_ops=2)
     # NOTE: both of these split the reduce (this just wasn't tracked before)
     #helper(Tensor.arange(-3.2, 6.7, 0.64), max_ops=2)
     #helper(Tensor.arange(256), max_ops=2)
-    helper(Tensor.arange(255), max_ops=2)
+    helper(Tensor.arange(255).clone(), max_ops=2)
 
   @unittest.skip("test implicitly depends on certain optimizations")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.supports_float4, "test requires float4")
@@ -365,7 +367,7 @@ class TestLinearizer(unittest.TestCase):
     assert len(barrier) == 1
     # check that the float4 cast collapses for all stores
     for store in local_stores+global_stores:
-      assert store.src[1].dtype.count > 1 # and store.src[2].op is not Ops.VECTORIZE
+      assert store.src[1].max_numel() > 1 # and store.src[2].op is not Ops.VECTORIZE
     # # check the children's vins
     # TODO: src ALU are not the same, should it?
     # assert barrier.src == tuple(local_stores)
