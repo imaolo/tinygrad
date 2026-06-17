@@ -103,7 +103,7 @@ def silu_w13_quantize_matmul(x_w13:Tensor, w2:Tensor, s_2:Tensor,
   return out, ret
 
 def allgather(x: Tensor) -> Tensor:
-  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype, requires_grad=x.requires_grad)
+  return Tensor(x.uop.copy_to_device(x.device), device=x.device, dtype=x.dtype).is_param_(x.is_param)
 
 class FlatTransformer:
 
@@ -175,8 +175,8 @@ class FlatTransformer:
       self._fp8_next_inv_scale[wname] = inv_scale.float().contiguous().is_param_(False)
 
   def create_lora_params(self, in_dim:int, out_dim:float, rank:int) -> tuple[Tensor, Tensor]:
-    a = self.lin_per_layer(in_dim, rank, requires_grad=True, use_kaiming=True)
-    b = self.lin_per_layer(rank, out_dim, requires_grad=True, zeros=True)
+    a = self.lin_per_layer(in_dim, rank, is_param=True, use_kaiming=True)
+    b = self.lin_per_layer(rank, out_dim, is_param=True, zeros=True)
     return a, b
 
   def run_lora(self, lora_a: Tensor, lora_b: Tensor, x: Tensor) -> Tensor:
@@ -184,14 +184,16 @@ class FlatTransformer:
     out, *_ = matmul(out, lora_b, fp8=False)
     return out * self.lora_scale
 
-  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zeros:bool=False, use_kaiming:bool=False, **kwargs):
+  def lin_per_layer(self, in_features:int, out_features:int, std:float=0.02, zeros:bool=False, use_kaiming:bool=False, is_param:bool|None=None):
+    if is_param is None: is_param = not self.use_lora
     if zeros or getenv("ZEROS"):
-      return Tensor.zeros(self.n_layers, out_features, in_features, **kwargs)
+      w = Tensor.zeros(self.n_layers, out_features, in_features)
     else:
       if use_kaiming:
-        return Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5), **kwargs)
+        w = Tensor.kaiming_uniform(self.n_layers, out_features, in_features, a=math.sqrt(5))
       else:
-        return Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std, **kwargs)
+        w = Tensor.normal(self.n_layers, out_features, in_features, mean=0.0, std=std)
+    return w.is_param_(is_param)
 
   def attention(self, x:Tensor, freqs_cis:Tensor, *, attention_norm:Tensor, wqkv:Tensor, wo:Tensor,
                 amax_xqkv:Tensor, amax_xo:Tensor, s_qkv:Tensor, s_o:Tensor,
@@ -284,11 +286,11 @@ class FlatTransformer:
       from tinygrad.nn.state import get_state_dict
       if fsdp:
         fsdp_wnames = ["wqkv", "wo", "w2"]
-        fsdp_wnames += ["x1", "x3"] if SPLIT_W13 else ["x13"]
+        fsdp_wnames += ["w1", "w3"] if SPLIT_W13 else ["w13"]
         self.fsdp_wnames = tuple(fsdp_wnames)
       for k, v in get_state_dict(self).items():
         if k in self.fsdp_wnames: _shard_fp8(k, 1)
-        else: v.shard(device, axis=None)
+        else: v.shard_(device, axis=None)
     else:
       _shard_fp8("wqkv", 1)          # (n_layers, out, dim) shard out
       _shard_fp8("wo", 2)            # (n_layers, dim, in) shard in
