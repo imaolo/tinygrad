@@ -281,6 +281,9 @@ class FlatTransformer:
       self._fp8_inv_scale[name] = self._fp8_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
       self._fp8_next_inv_scale[name] = self._fp8_next_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
       Tensor.realize(getattr(self, name), self._fp8_inv_scale[name], self._fp8_next_inv_scale[name])
+    def _shard_lora(a_name:str, b_name:str, b_axis:int|None):
+      getattr(self, a_name).shard_(device, axis=None).realize()  # (n_layers, rank, in), small enough to replicate
+      getattr(self, b_name).shard_(device, axis=b_axis).realize() # (n_layers, out, rank), shard out for column-parallel outputs
 
     if not mp:
       from tinygrad.nn.state import get_state_dict
@@ -300,6 +303,9 @@ class FlatTransformer:
       else:
         _shard_fp8("w13", 1)         # (n_layers, hidden*2, dim) shard out
       _shard_fp8("w2", 2)            # (n_layers, dim, hidden) shard in
+      if self.use_lora:
+        _shard_lora("lora_a", "lora_b", 1)
+        _shard_lora("lora_a_wo", "lora_b_wo", None)
       self.attention_norm.shard_(device, axis=None).realize()
       self.ffn_norm.shard_(device, axis=None).realize()
       self.norm.weight.shard_(device, axis=None).realize()
