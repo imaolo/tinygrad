@@ -8,8 +8,8 @@ from tinygrad.uop.symbolic import symbolic, pm_simplify_valid, pm_drop_and_claus
 from tinygrad.helpers import argsort, all_same, cpu_profile, PCONTIG, colored, Context, SPEC
 
 ALWAYS_CONTIGUOUS: set[Ops] = {Ops.CONTIGUOUS, Ops.AFTER, Ops.COPY, Ops.BUFFER, Ops.SLICE,
-                     Ops.CONST, Ops.BIND, Ops.DEVICE, Ops.MSELECT, Ops.MSTACK, Ops.PARAM,
-                     Ops.DEFINE_LOCAL, Ops.DEFINE_REG, Ops.LOAD, Ops.CALL, Ops.FUNCTION}
+                      Ops.CONST, Ops.BIND, Ops.MSELECT, Ops.MSTACK, Ops.PARAM,
+                      Ops.LOAD, Ops.CALL, Ops.FUNCTION}
 
 def realize(ctx:dict[UOp, None], tr:UOp) -> None: ctx[tr] = None
 
@@ -56,10 +56,11 @@ class IndexingContext:
 def create_bufferize_and_index_based_on_ranges(ctx:IndexingContext, x:UOp):
   if x.op in {Ops.STAGE, Ops.INDEX}: return None
   new_srcs = []
-  for s in x.src:
+  for i, s in enumerate(x.src):
     new_src = s
+    # shape args of movement ops are at src[1:] and should not be indexed
     if s.op in {Ops.PARAM, Ops.BUFFER, Ops.SLICE, Ops.MSTACK, Ops.MSELECT, Ops.AFTER}:
-      if x in ctx.range_map: new_src = new_src.index(*ctx.range_map[x][0])
+      if x in ctx.range_map and not (x.op in GroupOp.Movement and i > 0): new_src = new_src.index(*ctx.range_map[x][0])
     elif s in ctx.realize_map:
       realized_ranges = ctx.realize_map[s]
       assert isinstance(realized_ranges, list), "realize map must contain range list"
@@ -77,23 +78,20 @@ def create_bufferize_and_index_based_on_ranges(ctx:IndexingContext, x:UOp):
         new_src = UOp(Ops.STAGE, s.dtype, src=(new_src,)+closed_ranges, arg=opts)
         if x in ctx.range_map: new_src = new_src.index(*[r for i,r in enumerate(ctx.range_map[x][0]) if i in realized_ranges])
     new_srcs.append(new_src)
-  # NOTE: do we need this?
-  return x.replace(src=tns) if x.src != (tns:=tuple(new_srcs)) else None
+  return x.replace(src=tuple(new_srcs))
 
 def convert_pad_to_where_to_keep_behavior_local(ctx:IndexingContext, x:UOp):
   if x not in ctx.range_map: return None
+  bx = create_bufferize_and_index_based_on_ranges(ctx, x)
   valid: UOp = UOp.const(dtypes.bool, True).uprod([r.get_valid() for r in ctx.range_map[x][0]])
-  ret = valid.where(x.src[0], UOp.const(x.dtype, 0))
-  ctx.range_map[ret] = ctx.range_map[x]
-  return ret
+  return valid.where(bx.src[0], UOp.const(x.dtype, 0))
 
 def convert_reduce_to_reduce_with_ranges(ctx:IndexingContext, x:UOp):
   if len(x.arg[1]) == 0: return None
+  bx = create_bufferize_and_index_based_on_ranges(ctx, x)
   # input ranges
   new_ranges = [r for i,r in enumerate(ctx.range_map[x][0]) if i in x.arg[1]]
-  ret = UOp(Ops.REDUCE, x.dtype, src=(x.src[0],)+tuple(new_ranges), arg=(x.arg[0], ()))
-  ctx.range_map[ret] = ctx.range_map[x]
-  return ret
+  return UOp(Ops.REDUCE, x.dtype, src=(bx.src[0],)+tuple(new_ranges), arg=(x.arg[0], ()))
 
 def remove_movement_op_after_rangeify(ctx:IndexingContext, x:UOp):
   if x in ctx.range_map or x.src[0].op is Ops.INDEX: return x.src[0]
@@ -144,7 +142,7 @@ def apply_movement_op(op:Ops, in_shape:tuple[sint,...], arg:tuple, rngs:tuple[UO
         symbolic+pm_simplify_valid, name="pad").where(r-off, UOp.invalid()) for r,sh,(off,sz) in zip(rngs, in_shape, arg))
     case Ops.RESHAPE:
       sink = UOp.sink(*rngs).simplify() # NOTE: this applies any commutative flips to the rngs early
-      sub_array = {r:UOp.range(r.src[0], i, AxisType.PLACEHOLDER) for i,r in enumerate(sink.ranges)}
+      sub_array = {r:UOp.range(r.src[0], i, AxisType.PLACEHOLDER, dtype=r.dtype) for i,r in enumerate(sink.ranges)}
       rngs = _apply_reshape(in_shape, arg, sink.substitute(sub_array)).substitute({v:k for k,v in sub_array.items()}).src
     case _: raise RuntimeError(f"{op} is not a MovementOp")
   return rngs
@@ -164,8 +162,6 @@ def run_rangeify(tsink:UOp, debug:bool=False) -> tuple[UOp, IndexingContext]:
   # explicit rangeify
   ending_ranges: dict[UOp, list[UOp]] = {}
   for x in reversed(tsink_toposort):
-    if x.op in {Ops.DEVICE, Ops.UNIQUE}: continue
-
     # no ranges on kernels, they are internal
     if x.op in {Ops.CALL, Ops.FUNCTION, Ops.LINEAR}: continue
 

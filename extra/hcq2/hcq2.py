@@ -1,18 +1,16 @@
 from __future__ import annotations
-from typing import cast, Callable, TypeVar, Generic, Any, TYPE_CHECKING
+from typing import cast, Callable, TypeVar, Generic, Any
 import struct, functools, time, collections, importlib, itertools, weakref
-from dataclasses import replace
-if TYPE_CHECKING: from tinygrad.engine.realize import ExecContext
-from tinygrad.helpers import DEV, getenv, select_first_inited, select_by_name, suppress_finalizing, mv_address, DEBUG, dedup, pluralize
+from dataclasses import replace, dataclass, field
+from tinygrad.helpers import DEV, getenv, select_first_inited, select_by_name, suppress_finalizing, DEBUG, dedup, flatten, pluralize
+from tinygrad.helpers import to_tuple, round_up
 from tinygrad.device import Device, Buffer, BufferSpec, Compiled, LRUAllocator, MultiBuffer
 from tinygrad.uop.ops import Ops, sint, UOp, UPat, PatternMatcher, KernelInfo, graph_rewrite, track_rewrites, GroupOp
 from tinygrad.uop.symbolic import symbolic_simple, symbolic
-from tinygrad.dtype import dtypes, DType
-from dataclasses import dataclass, field
-from tinygrad.runtime.support.memory import BumpAllocator
+from tinygrad.dtype import dtypes, AddrSpace
 from tinygrad.runtime.support.hcq import MMIOInterface
 from tinygrad.renderer import Renderer, Estimates
-from tinygrad.engine.realize import to_program, track_stats, get_call_arg_uops, resolve_params, pm_flatten_linear
+from tinygrad.engine.realize import to_program, get_call_arg_uops, get_call_name, get_call_outs_ins, estimate_uop, pm_flatten_linear
 from tinygrad.engine.jit import DepsTracker
 
 HCQDeviceType = TypeVar('HCQDeviceType', bound='HCQ2Compiled')
@@ -29,7 +27,7 @@ class HCQ2Compiled(Compiled):
       (UPat(Ops.BUFFER, tag="timeline_value"), lambda ctx: ctx.timeline_value()),
       (UPat(Ops.BUFFER, tag="sentinel_signal"), lambda ctx: ctx.timeline_signal("sentinel", (1 << 64) - 1)),
       (UPat(Ops.BUFFER, name="b"), lambda ctx, b:
-        Buffer(ctx.device, b.arg, b.dtype, options=BufferSpec(host=True, uncached=True, cpu_access=True, nolru=True))), # TODO: remove nolru
+        Buffer(ctx.device, b.max_numel(), b.dtype, options=BufferSpec(host=False, uncached=True, cpu_access=True, nolru=True))), # TODO: remove nolru
     ])
 
     super().__init__(device, allocator, compilers, lambda *a, **kw: None, None, arch=arch)
@@ -138,21 +136,24 @@ def unwrap_after(uop):
   while uop.op is Ops.AFTER: uop = uop.src[0]
   return uop
 
-def make_getaddr(u, dev=None):
-  if unwrap_after(u).op not in (Ops.BUFFER, Ops.SLICE, Ops.BINARY, Ops.MSTACK, Ops.MSELECT): return u
-  return UOp(Ops.GETADDR, dtypes.uint64, src=(u, UOp(Ops.DEVICE, arg=dev or to_tuple(u.device)[0])))
+def make_getaddr(u, device=None):
+  if unwrap_after(u).op not in (Ops.BUFFER, Ops.SLICE, Ops.BINARY, Ops.MSTACK, Ops.MSELECT, Ops.PARAM): return u
+  return UOp(Ops.GETADDR, dtypes.uint64, src=(u,), arg=device or to_tuple(u.device)[0])
 
 def make_ins(op, *srcs):
   return UOp(Ops.INS, dtypes.void, tuple(UOp.const(dtypes.uint32, s) if isinstance(s, int) else s.cast(dtypes.uint32) for s in srcs), op)
+
+def make_patch(buf:UOp, off:sint, val:UOp, dtype=None) -> UOp:
+  dt = dtype or val.dtype
+  return UOp(Ops.SHRINK, buf.dtype.base, (buf, UOp.const(dtypes.int, off), UOp.const(dtypes.int, dt.itemsize))).bitcast(dt).store(val.cast(dt))
 
 def make_cmdbuf(lin, devs, tag):
   blob, patches = b'', []
   for s in (s for ins in lin.src for s in ins.src):
     if s.op is not Ops.CONST: patches.append((len(blob), s))
     blob += struct.pack(f'<{s.dtype.fmt}', s.arg if s.op is Ops.CONST else 0x0)
-  buf = UOp.new_buffer(devs if len(devs) > 1 else devs[0], len(blob), dtypes.uint8).rtag(tag)
-  stores = [buf.index(UOp.const(dtypes.int, off), dtype=buf.dtype.ptr()).cast(s.dtype.ptr()).store(s) for off, s in patches]
-  return buf.after(buf.store(UOp(Ops.BINARY, dtypes.void, src=(), arg=blob)), *stores)
+  buf = UOp.new_buffer(devs, len(blob), dtypes.uint8).rtag(tag)
+  return buf.after(buf.store(UOp(Ops.BINARY, dtypes.void, src=(), arg=blob)), *[make_patch(buf, off, s) for off, s in patches])
 
 def make_mstack(uops): return uops[0] if len(uops) == 1 else UOp(Ops.MSTACK, uops[0].dtype, tuple(uops))
 
@@ -166,24 +167,35 @@ def make_signal_value(devs, queue=None): return UOp.new_buffer(devs, 1, dtypes.u
 HCQ_DEVS = frozenset(("AMD",))
 HCQ_P2P_DEVS = HCQ_DEVS | frozenset(("CPU",))
 
-def to_tuple(d): return d if isinstance(d, tuple) else (d,)
-
 def all_devices_in(d:Any, c:frozenset[str]) -> bool: return {x.split(":")[0] for x in to_tuple(d)} <= c
 
+@dataclass(frozen=True)
+class HCQInfo:
+  name:str = ""
+  estimates:Estimates = Estimates()
+  outs:tuple[int, ...] = ()
+  devs:tuple[str, ...] = ()
+
+  params:tuple[int, ...] = ()
+  inputs:int|None = None
+
+  @staticmethod
+  def from_call(call:UOp) -> HCQInfo: return HCQInfo(get_call_name(call, get_call_arg_uops(call)), estimate_uop(call), get_call_outs_ins(call)[0])
+
 # *****************
-# 1.1. prep runtimes: staging copies
+# 1.1. prep: staging copies
 
 def _need_staging(a, b): return all_devices_in(a.device, HCQ_DEVS) and not all_devices_in(b.device, HCQ_P2P_DEVS)
 
 def stage_copy(dst:UOp, src:UOp) -> UOp|None:
   if not (_need_staging(src, dst) or _need_staging(dst, src)): return None
 
-  stage = UOp.new_buffer("CPU", src.buffer.nbytes, dtypes.uint8)
+  stage = UOp.new_buffer("CPU", src.nbytes(), dtypes.uint8)
   return UOp(Ops.LINEAR, dtypes.void, (src.copy_to_device("CPU").call(stage, src), stage.copy_to_device(dst.device).call(dst, stage)))
 pm_insert_copy_staging = PatternMatcher([(UPat(Ops.CALL, src=(UPat(Ops.COPY), UPat(name="dst"), UPat(name="src"))), stage_copy)])
 
 # *****************
-# 1.2. prep runtimes: programs/kernargs
+# 2.1. hcq lowering: programs/kernargs
 
 @functools.cache
 def get_pm_prep_program(name:str) -> PatternMatcher|None:
@@ -199,22 +211,18 @@ def prep_program(call:UOp, prg:UOp) -> UOp|None:
   data, image_bytes = lowered
   buf = UOp.new_buffer(dev, len(image_bytes), dtypes.uint8).rtag("program")
   blob = UOp(Ops.BINARY, dtypes.void, src=(), arg=image_bytes)
-  return call.replace(src=(prg.replace(src=(buf.after(buf.store(blob)),), arg=(data, prg.arg)),) + call.src[1:])
+  return prg.replace(src=(buf.after(buf.store(blob)),), arg=(data, prg.arg)).call(*call.src[1:], aux=HCQInfo.from_call(call))
 
 def prep_kernargs(call:UOp, prg:UOp) -> UOp:
-  data, info = prg.arg
-  patches = [(i*dtypes.uint64.itemsize, UOp(Ops.GETADDR, dtypes.uint64, src=(call.src[1+gi], UOp(Ops.DEVICE, arg=call.src[1+gi].device))),
-              dtypes.uint64) for i,gi in enumerate(info.globals)] \
-          + [(len(info.globals)*dtypes.uint64.itemsize + i*dtypes.uint32.itemsize, v, dtypes.uint32) for i,v in enumerate(info.vars)]
-
-  buf = UOp.new_buffer(call.src[1].device, data.kernargs_alloc_size, dtypes.uint8).rtag("kernargs")
-  kernargs = buf.after(*tuple(buf.index(UOp.const(dtypes.int, o), dtype=buf.dtype.ptr()).cast(dt.ptr()).store(val.cast(dt)) for o, val, dt in patches))
-
-  return call.replace(src=(prg.replace(src=prg.src + (kernargs,), arg=(data, info)),) + call.src[1:])
+  (data, info), dev = prg.arg, call.src[1].device
+  buf = UOp.new_buffer(dev, data.kernargs_alloc_size, dtypes.uint8).rtag("kernargs")
+  patches = [make_patch(buf, i*8, make_getaddr(call.src[1+gi], dev)) for i,gi in enumerate(info.globals)] \
+          + [make_patch(buf, len(info.globals)*8 + i*4, v, dtypes.uint32) for i,v in enumerate(info.vars)]
+  return call.replace(src=(prg.replace(src=prg.src + (buf.after(*patches),), arg=(data, info)),) + call.src[1:])
 
 pm_prep_runtime = PatternMatcher([
   # bind generic PROGRAM device to the call's actual dev(s), then run device-specific lowering
-  (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, src=(UPat(), UPat(), UPat(), UPat(), UPat(Ops.BINARY)), name="prg"),),
+  (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, src=(UPat(), UPat(), UPat(), UPat(Ops.BINARY)), name="prg"),),
     name="call", allow_any_len=True), prep_program),
 
   # lower kernargs (PROGRAM.src[0] is now AFTER(BUFFER, COPY) — the lowered program image)
@@ -222,21 +230,21 @@ pm_prep_runtime = PatternMatcher([
 ])
 
 # *****************
-# 2. lowering to hcq ir
+# 2.2. hcq lowering: ops to ir
 
 def make_submit(*cmds, devs:str|tuple[str, ...], queue:str) -> UOp:
   devs:tuple[str, ...] = to_tuple(devs)
   return UOp(Ops.CUSTOM_FUNCTION, dtypes.void, src=(UOp(Ops.LINEAR, dtypes.void, src=tuple(cmds), arg=(devs, queue)),), arg="submit")
 
 def lower_program(call:UOp, prg:UOp) -> UOp:
-  return make_submit(prg, devs=call.src[1].device, queue="COMPUTE:0").sink().call(*call.src[1:]).rtag(("hcq", tuple(prg.arg[1].outs)))
+  return make_submit(prg, devs=call.src[1].device, queue="COMPUTE:0").sink().call(*call.src[1:], aux=call.arg.aux).rtag("hcq")
 
 def lower_copy(call:UOp, copy:UOp) -> UOp|None:
   dst, src = call.src[1], call.src[2]
   if (hcq_dev:=next((b.device for b in (dst, src) if b.device.split(":")[0] in HCQ_DEVS), None)) is None: return None
 
   cp_op = UOp(Ops.COPY, dtypes.void, src=(dst, src), arg=src.buffer.nbytes)
-  return make_submit(cp_op, devs=hcq_dev, queue="COPY:0").sink().call(*call.src[1:]).rtag(("hcq", (0,)))
+  return make_submit(cp_op, devs=hcq_dev, queue="COPY:0").sink().call(*call.src[1:], aux=HCQInfo.from_call(call)).rtag("hcq")
 
 pm_lower_ops = PatternMatcher([
   (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, src=(UPat(Ops.BUFFER).or_after(), UPat(Ops.BUFFER).or_after()), name="prg"),),
@@ -263,24 +271,42 @@ class DepsCtx:
   deps:DepsTracker = field(default_factory=DepsTracker)
   opid:itertools.count = field(default_factory=lambda: itertools.count(0))
   last_per_queue:weakref.WeakValueDictionary[tuple[Any, str], UOp] = field(default_factory=weakref.WeakValueDictionary)
+  params:dict[tuple[int, int], Buffer] = field(default_factory=dict)
+
+def get_dep_buf(ctx:DepsCtx, u:UOp, lane:int) -> Buffer:
+  # TODO: should this be a part of DepsTracker?
+  if u.op is Ops.PARAM: return ctx.params.setdefault((u.arg.slot, lane), Buffer("NULL", u.max_numel(), u.dtype.base))
+  if u.op is Ops.MSTACK: return get_dep_buf(ctx, u.src[lane], 0)
+  if u.op in (Ops.SLICE, Ops.MSELECT): return get_dep_buf(ctx, u.src[0], u.arg if u.op is Ops.MSELECT else lane)
+  return b.bufs[lane] if isinstance(b:=u.buffer, MultiBuffer) else b
 
 def schedule_inner_sync(ctx:DepsCtx, linear:UOp) -> UOp:
   new_src = []
   for call in linear.src:
-    if not isinstance(call.tag, tuple) or not call.tag[0] == "hcq":
+    if call.tag != "hcq":
       new_src.append(call)
       continue
 
-    q = get_submit(call.src[0]).src[0]
-    new_q = ctx.last_per_queue[q.arg] = q.rtag(next(ctx.opid))
+    new_q = ctx.last_per_queue[q.arg] = (q:=get_submit(call.src[0]).src[0]).rtag(next(ctx.opid))
+    qdevs, refs = to_tuple(new_q.arg[0]), get_call_arg_uops(call)
 
-    deps = []
-    refs = [b.buffer for b in get_call_arg_uops(call)]
-    for lane in range(len(refs[0].bufs) if isinstance(refs[0], MultiBuffer) else 1):
-      deps += ctx.deps.access_resources([b.bufs[lane] if isinstance(b, MultiBuffer) else b for b in refs], call.tag[1], new_q)
+    # per-lane deps, tracked per (device, queue). skip self
+    dep_lanes:list[tuple[UOp, int]] = []
+    for lane, d in enumerate(qdevs):
+      for dep in ctx.deps.access_resources([get_dep_buf(ctx, b, lane) for b in refs], call.arg.aux.outs, new_q.replace(arg=(d, new_q.arg[1]))):
+        if dep.tag != new_q.tag: dep_lanes.append((dep, lane))
 
-    new_q = new_q.after(*dps).rtag("deps") if (dps:=dedup(deps)) else new_q
-    new_src.append(call.replace(src=(call.src[0].substitute({q:new_q}), *call.src[1:]), tag="hcq"))
+    # drop self-queue waits, queue self-orders
+    if qdevs[0].split(":")[0] in {"AMD", "QCOM"} or new_q.arg[1].startswith("COPY"):
+      dep_lanes = [(dep, lane) for dep, lane in dep_lanes if dep.arg != (qdevs[lane], new_q.arg[1])]
+
+    # keep latest dep per lane, group lanes
+    latest = {(dep.arg, lane): dep for dep, lane in sorted(dep_lanes, key=lambda x: x[0].tag)}
+    deps:dict[UOp, tuple[int, ...]] = collections.defaultdict(tuple)
+    for (_, lane), dep in latest.items(): deps[dep] += (lane,)
+
+    if deps: new_q = new_q.after(*deps, arg=tuple(deps.values())).rtag("deps")
+    new_src.append(call.replace(src=(call.src[0].substitute({q:new_q}),)))
   return linear.replace(src=tuple(new_src))
 pm_schedule_inner_sync = PatternMatcher([(UPat(Ops.LINEAR, name="linear"), schedule_inner_sync)])
 
@@ -292,10 +318,16 @@ def make_finalizer(queues:list[UOp], nbump:int) -> UOp:
   zero = UOp.const(dtypes.int, 0)
   tl = make_signal_value(devs)
 
-  submit = make_submit(make_signal(devs).store(tl.index(zero) + 1), devs=devs, queue="COMPUTE:0")
+  # queue is inc with deps
+  submit = make_submit(make_signal(devs).store(tl.index(zero)), devs=devs, queue="COMPUTE:0")
+
+  # split each (multi-device) queue into per-device deps so each finalizer lane waits on the matching device's signal
+  lane_queues = [(q.replace(arg=(d, q.arg[1])), (devs.index(d),)) for q in queues for d in to_tuple(q.arg[0])]
+  submit = submit.replace(src=(submit.src[0].after(*(q for q, _ in lane_queues), arg=tuple(l for _, l in lane_queues)).rtag("deps"),))
 
   upd = [(tl, 1)] + [(make_signal_value(devs, queue=qn), nbump) for qn in dedup([q.arg[1] for q in queues])]
-  return UOp.barrier(*[s.after(submit).index(zero, dtype=s.dtype.ptr()).store(s.index(zero) + inc) for s, inc in upd]).sink().call().rtag("hcq")
+  patches = [s.after(submit).index(zero, dtype=s.dtype.ptr()).store(s.index(zero) + inc) for s, inc in upd]
+  return UOp.barrier(*patches).sink().call(aux=HCQInfo("hcq finalizer")).rtag("hcq")
 
 def add_finalizer(ctx:DepsCtx, linear:UOp) -> UOp:
   parts:dict[str, list[UOp]] = collections.defaultdict(list)
@@ -312,21 +344,22 @@ def add_loads(ctx:set[int], deps:UOp) -> UOp:
   cur_devs = to_tuple((cur:=deps.src[0]).arg[0])
 
   waits = []
-  for dep in deps.src[1:]:
-    devs, queue = dep.arg
+  for lanes, dep in zip(deps.arg, deps.src[1:]):
+    dep_dev, queue = dep.arg # dep_dev is a single device (deps are recorded per-device)
     ctx.add(dep.tag) # mark op to update signal.
 
-    sig = make_mstack([make_signal(d, queue=queue, sentinel=d not in devs) for d in cur_devs])
-    val = make_signal_value(cur_devs, queue=queue).index(UOp.const(dtypes.int, 0))
+    # for lanes that need this dep, wait on the dep device's signal/value; other lanes get a passing sentinel
+    lanes = set(lanes)
+    sig = make_mstack([make_signal(dep_dev if j in lanes else d, queue=queue, sentinel=j not in lanes) for j, d in enumerate(cur_devs)])
+    val = make_mstack([make_signal_value(dep_dev if j in lanes else d, queue=queue) for j, d in enumerate(cur_devs)]).index(UOp.const(dtypes.int, 0))
     waits.append(sig.wait(val + dep.tag))
   return cur.replace(src=tuple(waits) + cur.src)
 pm_add_inner_loads = PatternMatcher([(UPat(Ops.AFTER, tag="deps", name="deps"), add_loads)])
 
-def add_stores(ctx:set[int], submit:UOp, q:UOp) -> UOp:
-  src = q.src
-  if q.tag in ctx:
-    devs, queue = q.arg
-    src += (make_signal(devs, queue=queue).store(make_signal_value(devs, queue=queue).index(UOp.const(dtypes.int, 0)) + q.tag),)
+def add_stores(ctx:set[int], submit:UOp, q:UOp) -> UOp|None:
+  if q.tag not in ctx: return None
+  devs, queue = q.arg
+  src = q.src + (make_signal(devs, queue=queue).store(make_signal_value(devs, queue=queue).index(UOp.const(dtypes.int, 0)) + q.tag),)
   return submit.replace(src=(q.replace(src=src, tag=None),))
 pm_add_inner_stores = PatternMatcher([(UPat(Ops.CUSTOM_FUNCTION, arg="submit", src=(UPat(Ops.LINEAR, name="q"),), name="submit"), add_stores)])
 
@@ -335,32 +368,36 @@ pm_add_inner_stores = PatternMatcher([(UPat(Ops.CUSTOM_FUNCTION, arg="submit", s
 
 def get_submit(ast:UOp) -> UOp: return next(u for u in ast.toposort() if u.op is Ops.CUSTOM_FUNCTION and u.arg == "submit")
 
-def merge_sinks(old_sink:UOp, new_sink:UOp) -> UOp:
-  old_submit, new_submit = get_submit(old_sink), get_submit(new_sink)
-  old_queue, new_queue = old_submit.src[0], new_submit.src[0]
-  merged_submit = new_submit.replace(src=(new_queue.replace(src=old_queue.src + new_queue.src),))
-  old_root = old_sink.src[0].substitute({old_submit: merged_submit})
-  new_anchor = merged_submit if old_sink.src[0] is old_submit else old_root
-  return new_sink.substitute({new_submit: new_anchor})
+def merge_sink(sinks:list[UOp]) -> UOp:
+  if len(sinks) == 1: return sinks[0]
+  submits = [get_submit(sink) for sink in sinks]
+  queues = [submit.src[0] for submit in submits]
+  anchor = submits[-1].replace(src=(queues[-1].replace(src=tuple(x for q in queues for x in q.src)),))
+  for sink, submit in zip(sinks[:-1], submits[:-1]):
+    if sink.src[0] is not submit: anchor = sink.src[0].substitute({submit: anchor}, walk=True)
+  return sinks[-1].substitute({submits[-1]: anchor}, walk=True)
 
 def merge_queues(linear:UOp) -> UOp:
   new_src:list[UOp] = []
-  opened_qs:dict[tuple[tuple[str, ...], str], UOp] = {} # (devs, queue) -> sink, kept in submit order
+  opened_qs:dict[tuple[tuple[str, ...], str], tuple[list[UOp], HCQInfo]] = {} # (devs, queue) -> (sinks, aux), kept in submit order
 
   for call in linear.src:
-    if call.tag != "hcq":
-      new_src += [opened_qs.pop(k).call().rtag('hcq') for k in list(opened_qs)] + [call]
+    # finalizer cannot be merged, since it bumps inner signal (this introduces race when multidevs).
+    if call.tag != "hcq" or (call.tag == "hcq" and call.arg.aux.name == "hcq finalizer"):
+      new_src += [merge_sink((sa:=opened_qs.pop(k))[0]).call(aux=sa[1]).rtag("hcq") for k in list(opened_qs)] + [call]
       continue
 
     devs, queue = get_submit(new_sink:=call.src[0]).src[0].arg
-    if (old_sink:=opened_qs.pop((devs, queue), None)) is not None:
-      new_sink = merge_sinks(old_sink, new_sink) # exact same queue: merge, and re-insert at the end
+    new_rec = ([new_sink], call.arg.aux)
+    if (old:=opened_qs.pop((devs, queue), None)) is not None:
+      new_rec = (old[0] + [new_sink], replace(new_rec[1], name=f"{queue.lower()} submit", estimates=old[1].estimates + new_rec[1].estimates))
     else:
       # no such queue opened: close every open submit on this queue that shares a device, so submit order is kept
-      new_src += [opened_qs.pop(k).call().rtag('hcq') for k in [k for k in opened_qs if k[1] == queue and set(k[0]) & set(devs)]]
-    opened_qs[(devs, queue)] = new_sink
+      closing = [k for k in opened_qs if k[1] == queue and set(k[0]) & set(devs)]
+      new_src += [merge_sink((sa:=opened_qs.pop(k))[0]).call(aux=sa[1]).rtag("hcq") for k in closing]
+    opened_qs[(devs, queue)] = new_rec
 
-  return linear.replace(src=tuple(new_src + [sink.call().rtag('hcq') for sink in opened_qs.values()]))
+  return linear.replace(src=tuple(new_src + [merge_sink(sinks).call(aux=aux).rtag("hcq") for sinks, aux in opened_qs.values()]))
 pm_merge_queues = PatternMatcher([(UPat(Ops.LINEAR, name="linear"), merge_queues)])
 
 # *****************
@@ -374,6 +411,29 @@ def add_global_sync(ctx:set[tuple[str, ...]], submit:UOp, q:UOp) -> UOp|None:
   wait = make_signal(devs).wait(make_signal_value(devs).index(UOp.const(dtypes.int, 0)) - 1)
   return submit.replace(src=(q.replace(src=(UOp(Ops.BARRIER, dtypes.void), wait, *q.src)),))
 pm_add_global_sync = PatternMatcher([(UPat(Ops.CUSTOM_FUNCTION, arg="submit", src=(UPat(Ops.LINEAR, name="q"),), name="submit"), add_global_sync)])
+
+# *****************
+# 4.3. annotate exec devs
+
+pm_annotate_devs = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"),
+  lambda call: call.replace(arg=replace(call.arg, aux=replace(call.arg.aux, devs=get_submit(call.src[0]).src[0].arg[0]))))])
+
+# *****************
+# 4.4. replace params with per-submit input address loads
+
+def replace_params(call:UOp) -> UOp|None:
+  if not (params:={u:u.arg.slot for u in call.src[0].toposort() if u.op is Ops.PARAM and u.addrspace is AddrSpace.GLOBAL}): return None
+
+  # fill new info
+  hcqinfo = replace(call.arg.aux, params=tuple(sorted(set(params.values()))), inputs=len(get_call_arg_uops(call)))
+
+  inputs = UOp.new_buffer(get_submit(call.src[0]).src[0].arg[0], len(hcqinfo.params), dtypes.uint64).rtag("inputs")
+
+  slot2idx = {s:i for i,s in enumerate(hcqinfo.params)}
+  body = call.src[0].substitute({u:inputs.index(UOp.const(dtypes.int, slot2idx[s])).load() for u,s in params.items()})
+
+  return call.replace(src=(body, *call.src[1:], inputs), arg=replace(call.arg, aux=hcqinfo))
+pm_replace_params = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"), replace_params)])
 
 # *****************
 # 5.1. encode cmdbufs
@@ -402,16 +462,29 @@ pm_lift_patches_to_cmdbuf = PatternMatcher([
 ])
 
 # *****************
-# 6. bufferize placeholders: replace placeholders with real buffers.
+# 5.3. pack placeholders buffers
 
-def bufferize_buf(buf:UOp) -> UOp|None:
-  if buf.tag is None: return None
-  uops = tuple(UOp.from_buffer((dv:=Device[dev]).pm_bufferize.rewrite(buf, ctx=dv), dev) for dev in to_tuple(buf.src[1].arg))
-  return make_mstack(uops)
-pm_bufferize = PatternMatcher([(UPat(Ops.BUFFER, name="buf"), bufferize_buf)])
+def pack_hcq_placeholders(call:UOp) -> UOp|None:
+  bufs = [b for b in call.src[0].toposort() if b.op is Ops.BUFFER and b.tag in (maxtags:={"scratch"}) | (sumtags:={"program", "kernargs"})]
+
+  off_per_buf:dict[UOp, int] = {}
+  size_per_tag:dict[str, int] = {}
+  for b in bufs:
+    bsz = b.max_numel()
+    if b.tag in maxtags: size_per_tag[b.tag] = max(size_per_tag.get(b.tag, 0), bsz)
+    elif b.tag in sumtags:
+      off_per_buf[b] = round_up(size_per_tag.get(b.tag, 0), {"program": 0x1000}.get(b.tag, 128))
+      size_per_tag[b.tag] = off_per_buf[b] + bsz
+
+  count_per_tag = collections.Counter(b.tag for b in bufs)
+  ref_bufs = {b.tag:b for b in bufs if count_per_tag[b.tag] > 1}
+  bases = {tag:UOp.new_buffer(b.device, size_per_tag[tag], b.dtype).rtag(tag) for tag,b in ref_bufs.items()}
+  subs = {b:UOp(Ops.SLICE, b.dtype, (bases[b.tag], UOp.const(dtypes.weakint, off_per_buf.get(b, 0))), b.max_numel()) for b in bufs if b.tag in bases}
+  return call.replace(src=(call.src[0].substitute(subs, walk=True), *call.src[1:])) if subs else None
+pm_pack_placeholders = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"), pack_hcq_placeholders)])
 
 # *****************
-# 7.1. capture buffers reachable from each hcq call as BIND, so we don't drop their refs
+# 5.4. capture buffers reachable from each hcq call as BIND, so we don't drop their refs
 
 def hold_call_buffers(call:UOp) -> UOp|None:
   if not (bufs:=tuple(dedup(u for u in call.src[0].toposort() if u.op is Ops.BUFFER and u not in call.src))): return None
@@ -419,78 +492,106 @@ def hold_call_buffers(call:UOp) -> UOp|None:
 pm_hold_call_buffers = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"), hold_call_buffers)])
 
 # *****************
-# 7.2. resolve patches
+# 6. bufferize placeholders: replace placeholders with real buffers.
+
+def bufferize_buf(buf:UOp) -> UOp|None:
+  if buf.tag is None: return None
+  uops = tuple(UOp.from_buffer((dv:=Device[dev]).pm_bufferize.rewrite(buf, ctx=dv), "CPU") for dev in to_tuple(buf.device))
+  return make_mstack(uops)
+pm_bufferize = PatternMatcher([(UPat(Ops.BUFFER, name="buf"), bufferize_buf)])
+
+# *****************
+# 7. resolve patches
 
 def push_stack(op, s): return UOp(Ops.STACK, op.dtype.scalar().vec(len(s.src)),
   tuple(op.replace(dtype=op.dtype.scalar(), src=tuple(x if y is s else y for y in op.src)) for x in s.src))
 
 def fold_blob_store(buf:UOp, blob:UOp) -> UOp:
-  for b in (buf.src if buf.op is Ops.MSTACK else (buf,)): b.buffer.ensure_allocated()._buf.cpu_view().mv.cast('B')[:len(blob.arg)] = blob.arg
+  for b in (mb.bufs if isinstance((mb:=buf.buffer), MultiBuffer) else (mb,)): b.ensure_allocated()._buf.cpu_view().mv.cast('B')[:len(blob.arg)] = blob.arg
   return UOp(Ops.NOOP)
 
 def fold_const_store(buf:UOp, off:UOp, val:UOp) -> UOp:
-  for b, v in zip((buf.src if buf.op is Ops.MSTACK else (buf,)), (val.src if val.op is Ops.STACK else (val,))):
-    struct.pack_into(f'<{v.dtype.fmt}', b.buffer.ensure_allocated()._buf.cpu_view().mv.cast('B'), off.arg * b.dtype.base.itemsize, v.arg)
+  for b, v in zip((bs:=mb.bufs if isinstance((mb:=buf.buffer), MultiBuffer) else (mb,)), val.src if val.op is Ops.STACK else (val,)*len(bs)):
+    struct.pack_into(f'<{v.dtype.fmt}', b.ensure_allocated()._buf.cpu_view().mv.cast('B'), off.arg * buf.dtype.base.itemsize, v.arg)
   return UOp(Ops.NOOP)
 
 def resolve_getaddr(buf:UOp, g:UOp) -> UOp:
-  if isinstance(b:=buf.buffer, Buffer): return UOp.const(dtypes.uint64, b.get_buf(g.src[1].arg).va_addr)
-  return UOp(Ops.STACK, dtypes.uint64.vec(len(b.bufs)), tuple(UOp.const(dtypes.uint64, x.ensure_allocated()._buf.va_addr) for x in b.bufs))
+  if buf.op not in (Ops.BUFFER, Ops.MSTACK, Ops.MSELECT): return buf
+  devs, b = to_tuple(g.arg), buf.buffer
+  bufs = tuple(cast(Buffer, x.buffer) for x in buf.src) if buf.op is Ops.MSTACK else tuple(b.bufs if isinstance(b, MultiBuffer) else (b,)*len(devs))
+  assert len(bufs) == len(devs), f"can't resolve {len(bufs)} buffers on {len(devs)} devices"
+  addrs = tuple(UOp.const(dtypes.uint64, x.get_buf(d).va_addr) for x, d in zip(bufs, devs))
+  return addrs[0] if len(addrs) == 1 else UOp(Ops.STACK, dtypes.uint64.vec(len(addrs)), addrs)
+
+def resolve_getaddr_slice(bv:UOp, g:UOp) -> UOp:
+  itemsize = bv.src[0].dtype.itemsize if unwrap_after(bv.src[0]).op in (Ops.BUFFER, Ops.SLICE, Ops.MSTACK, Ops.MSELECT) else bv.dtype.itemsize
+  return UOp(Ops.GETADDR, dtypes.uint64, src=(bv.src[0],), arg=g.arg) + UOp.const(dtypes.uint64, bv.src[1].arg * itemsize)
 
 pm_resolve_patches = PatternMatcher([
   # multi
   (UPat(GroupOp.ALU, src=[UPat(Ops.STACK, name="s"), UPat(Ops.CONST)], name="op"), push_stack),
   (UPat(Ops.CAST, src=(UPat(Ops.STACK, name="s"),), name="op"), push_stack),
 
+  # shrink on slice is shrink on base at offset
+  (UPat(Ops.SHRINK, src=(UPat(Ops.SLICE, name="bv"), UPat(), UPat()), name="shr"),
+    lambda shr, bv: shr.replace(src=(bv.src[0], shr.src[1] + bv.src[1].cast(shr.src[1].dtype), shr.src[2]))),
+
   # getaddr
-  (UPat(Ops.GETADDR, src=(UPat(Ops.SLICE, name="bv"), UPat(Ops.DEVICE, name="dev"))), # getaddr(slice(x)) -> offset+getaddr(x)
-    lambda bv, dev: UOp(Ops.GETADDR, dtypes.uint64, src=(bv.src[0], dev)) + UOp.const(dtypes.uint64, bv.src[1].arg * bv.src[0].dtype.itemsize)),
-  (UPat(Ops.GETADDR, src=(UPat({Ops.BUFFER, Ops.MSTACK, Ops.MSELECT}, name="buf"), UPat(Ops.DEVICE)), name="g"), resolve_getaddr),
+  (UPat(Ops.GETADDR, src=(UPat(Ops.SLICE, name="bv"),), name="g"), resolve_getaddr_slice), # getaddr(slice(x)) -> offset+getaddr(x)
+  (UPat(Ops.GETADDR, src=(UPat(name="buf"),), name="g"), resolve_getaddr),
 
   # folders
-  (UPat({Ops.BUFFER, Ops.MSTACK}, name="buf").store(UPat(Ops.BINARY, name="blob")), fold_blob_store),
-  (UPat({Ops.BUFFER, Ops.MSTACK}, name="buf").index(UPat.cvar("off")).or_casted().store(UPat.any(UPat.cvar("val"), UPat(Ops.STACK, name="val"))),
-    fold_const_store),
+  (UPat({Ops.BUFFER, Ops.SLICE, Ops.MSTACK}, name="buf").store(UPat(Ops.BINARY, name="blob")), fold_blob_store),
+  (UPat(Ops.SHRINK, src=(UPat({Ops.BUFFER, Ops.SLICE, Ops.MSTACK}, name="buf"), UPat.cvar("off"), UPat(Ops.CONST))).bitcast()
+    .store(UPat.any(UPat.cvar("val"), UPat(Ops.STACK, name="val"))), fold_const_store),
 ]) + symbolic_simple
 
 # *****************
 # 8. callify hcq programs
 
 def to_param(bufs:list[UOp], ref:UOp) -> UOp:
-  bufs.append(ref)
-  return UOp.placeholder((ref.buffer.size,), ref.dtype, len(bufs)-1)
+  if ref not in bufs: bufs.append(ref)
+  return UOp.placeholder((ref.buffer.size,), ref.dtype, bufs.index(ref))
 pm_to_param = PatternMatcher([(UPat({Ops.MSELECT, Ops.MSTACK, Ops.BUFFER}, name="r"), lambda ctx, r: to_param(ctx, r))])
 
 def parametrize_host_buffers(call:UOp) -> UOp:
-  body = graph_rewrite(call.src[0], pm_to_param, ctx=(bufs:=[]), bottom_up=True, name="parametrize host buffers")
-  return call.replace(src=(body, *bufs) + call.src[1:], tag="hcq_param")
+  # preserve original order of args
+  body = graph_rewrite(call.src[0], pm_to_param, ctx=(bufs:=list(get_call_arg_uops(call))), bottom_up=True, name="parametrize host buffers")
+
+  # move vars to new slots
+  var_slots = {nm:len(bufs)+i for i,nm in enumerate(sorted({v.expr for v in body.variables() if v.op is Ops.PARAM}))}
+  body = body.substitute({v:v.replace(arg=replace(v.arg, slot=var_slots[v.expr])) for v in body.variables() if v.op is Ops.PARAM})
+
+  return call.replace(src=(body, *bufs) + tuple(x for x in call.src[1:] if x.op is Ops.BIND))
 pm_parametrize_host_buffers = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"), parametrize_host_buffers)])
 
 def callify_hcq(call:UOp) -> UOp:
-  sink = UOp.sink(call.src[0], arg=KernelInfo(name="hcq_submit", estimates=Estimates()), tag=1)
-  return to_program(sink, Device["CPU"].renderer).call(*call.src[1:])
-pm_callify_hcq = PatternMatcher([(UPat(Ops.CALL, tag="hcq_param", name="call"), callify_hcq)])
+  prg = to_program(call.src[0].sink(arg=KernelInfo("hcq_submit"), tag=1), Device["CPU"].renderer)
+  return UOp(Ops.CUSTOM_FUNCTION, dtypes.void, src=(prg,), arg="hcq").call(*call.src[1:], aux=call.arg.aux)
+pm_callify_hcq = PatternMatcher([(UPat(Ops.CALL, tag="hcq", name="call"), callify_hcq)])
 
-@track_rewrites(lambda _,ret: f"HCQ Schedule {pluralize('Kernel', len(ret.src))}")
-def hcq_schedule(linear:UOp) -> UOp:
+@track_rewrites(lambda _,ret: f"HCQ Compile {pluralize('Kernel', len(ret.src))}")
+def hcq_compile(linear:UOp) -> UOp:
   linear = graph_rewrite(linear, pm_insert_copy_staging + pm_flatten_linear, name="insert copy staging")
   linear = graph_rewrite(linear, pm_prep_runtime, name="prepare runtime")
 
   linear = graph_rewrite(linear, pm_lower_ops, name="lower ops into hcq ir")
-  linear = graph_rewrite(linear, pm_schedule_inner_sync, ctx=(deps_ctx:=DepsCtx()), name="schedule inner sync")
+  linear = graph_rewrite(linear, pm_schedule_inner_sync, ctx=(deps_ctx:=DepsCtx()), walk=True, name="schedule inner sync")
   linear = graph_rewrite(linear, pm_add_finalizer, ctx=deps_ctx, walk=True, name="add finalizer")
   linear = graph_rewrite(linear, pm_add_inner_loads, ctx=(waited:=set()), walk=True, name="add loads", enter_calls=True)
   linear = graph_rewrite(linear, pm_add_inner_stores, ctx=waited, walk=True, name="add stores", enter_calls=True)
   linear = graph_rewrite(linear, pm_merge_queues, name="merge queues")
   linear = graph_rewrite(linear, pm_add_global_sync, ctx=set(), walk=True, name="add global sync", enter_calls=True)
+  linear = graph_rewrite(linear, pm_annotate_devs, name="annotate devs")
+  linear = graph_rewrite(linear, pm_replace_params, name="replace params")
   linear = graph_rewrite(linear, pm_encode_cmdbufs, walk=True, name="encode cmdbufs", enter_calls=True)
   linear = graph_rewrite(linear, pm_lift_patches_to_cmdbuf, name="lift patches to cmdbuf", enter_calls=True)
+  linear = graph_rewrite(linear, pm_pack_placeholders, walk=True, name="pack placeholders")
+  return graph_rewrite(linear, pm_hold_call_buffers, walk=True, name="hold call buffers")
 
-  # realize starts from here
-  linear = graph_rewrite(linear, pm_bufferize, bottom_up=True, name="bufferize placeholders", enter_calls=True)
-  linear = graph_rewrite(linear, pm_hold_call_buffers, walk=True, name="hold call buffers")
+@track_rewrites(lambda _,ret: f"HCQ Link {pluralize('Kernel', len(ret.src))}")
+def hcq_link(linear:UOp) -> UOp:
+  linear = graph_rewrite(linear, pm_bufferize, bottom_up=True, walk=True, name="bufferize placeholders", enter_calls=True)
   linear = graph_rewrite(linear, pm_resolve_patches, bottom_up=False, name="simplify patches", enter_calls=True)
-  linear = graph_rewrite(linear, pm_parametrize_host_buffers, name="parametrize host buffers")
-  linear = graph_rewrite(linear, pm_callify_hcq, name="callify hcq")
-
-  return linear
+  linear = graph_rewrite(linear, pm_parametrize_host_buffers, walk=True, name="parametrize host buffers")
+  return graph_rewrite(linear, pm_callify_hcq, name="callify hcq")
