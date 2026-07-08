@@ -1437,7 +1437,9 @@ def train_llama3(llama2_70b_lora:bool=False):
 
       load_state_dict(model, state_dict, strict=False, realize=True, consume=True)
       assert not state_dict, "unconsumed weights"
+      print("model load weights peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
     model.quantize()
+  print("model quantize peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
   if is_dp: vocab_mask.shard_(device, axis=None).realize()
   if is_mp: vocab_mask.shard_(device, axis=2).realize()
@@ -1490,6 +1492,7 @@ def train_llama3(llama2_70b_lora:bool=False):
   # realize everything here
   if optim.master_params: Tensor.realize(*optim.master_params)
   Tensor.realize(*optim.params, *fp8_inv_scales, *fp8_amax, *fp8_grad_amax)
+  print("model final realize peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
   @TinyJit
   def minibatch(tokens:Tensor):
