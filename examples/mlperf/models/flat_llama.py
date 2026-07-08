@@ -179,9 +179,6 @@ class FlatTransformer:
     self.tok_embeddings.weight.is_param_(False)
     self.output.is_param_(False)
 
-    # quantize weights
-    self.quantize() 
-
   def quantize(self):
     def _amax(): return Tensor.full((), FP8_MAX, dtype=dtypes.float32, device=self.wqkv.device).contiguous().is_param_(False)
     names = ["xqkv", "xo", "x2"]
@@ -335,7 +332,7 @@ class FlatTransformer:
         self.fsdp_wnames = tuple(fsdp_wnames)
       for k, v in get_state_dict(self).items():
         # there is a "cycle" bug here if we dont realize the lora params...
-        v.shard_(device, axis=1 if k in self.fsdp_wnames else None).realize()
+        v.shard_(device, axis=1 if k in self.fsdp_wnames else None)
     else:
       assert not self.use_lora, "lora unsupported for MP"
       sstd = 0.02 / math.sqrt(2 * self.n_layers)
