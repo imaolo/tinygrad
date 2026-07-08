@@ -172,6 +172,13 @@ class FlatTransformer:
     self.output = Tensor.normal(1, vocab_size, dim, mean=0.0, std=0.02, dtype=dtypes.bfloat16)
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, max_context * 2, rope_theta).contiguous().is_param_(False)
 
+    # .... because we dont have 3 state requires_grad anymore
+    self.norm.weight.is_param_(False)
+    self.ffn_norm.is_param_(False)
+    self.attention_norm.is_param_(False)
+    self.tok_embeddings.weight.is_param_(False)
+    self.output.is_param_(False)
+
     # quantize weights
     self.quantize() 
 
@@ -316,9 +323,9 @@ class FlatTransformer:
         self._fp8_inv_scale[name] = self._fp8_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
         self._fp8_next_inv_scale[name] = self._fp8_next_inv_scale[name].shard(device, axis=scale_axis).contiguous().is_param_(False)
       Tensor.realize(w, self._fp8_inv_scale[name], self._fp8_next_inv_scale[name])
-    def _shard_lora(a_name:str, b_name:str, b_axis:int|None):
-      getattr(self, a_name).shard_(device, axis=None).realize()  # (n_layers, rank, in), small enough to replicate
-      getattr(self, b_name).shard_(device, axis=b_axis).realize() # (n_layers, out, rank), shard out for column-parallel outputs
+    # def _shard_lora(a_name:str, b_name:str, b_axis:int|None):
+    #   getattr(self, a_name).shard_(device, axis=None).realize()  # (n_layers, rank, in), small enough to replicate
+    #   getattr(self, b_name).shard_(device, axis=b_axis).realize() # (n_layers, out, rank), shard out for column-parallel outputs
 
     if not mp:
       from tinygrad.nn.state import get_state_dict
@@ -327,8 +334,8 @@ class FlatTransformer:
         fsdp_wnames += ["w1", "w3"] if SPLIT_W13 else ["w13"]
         self.fsdp_wnames = tuple(fsdp_wnames)
       for k, v in get_state_dict(self).items():
-        if k in self.fsdp_wnames: _shard_fp8(k, 1)
-        else: v.shard_(device, axis=None)
+        # there is a "cycle" bug here if we dont realize the lora params...
+        v.shard_(device, axis=1 if k in self.fsdp_wnames else None).realize()
     else:
       assert not self.use_lora, "lora unsupported for MP"
       sstd = 0.02 / math.sqrt(2 * self.n_layers)
