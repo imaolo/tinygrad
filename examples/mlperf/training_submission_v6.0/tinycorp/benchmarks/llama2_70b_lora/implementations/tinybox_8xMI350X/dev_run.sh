@@ -9,6 +9,7 @@ export NULL_ALLOW_COPYOUT=1
 export OFFLOAD_OPTIM=${OFFLOAD_OPTIM:-0}
 export MASTER_WEIGHTS=${MASTER_WEIGHTS:-1}
 export MODEL_PATH="/raid/weights/c4-llama2-70b-lora/"
+export BASEDIR="/raid/datasets/c4-llama2-70b-lora/"
 
 export EAGER_EXTERNAL_LOAD=${EAGER_EXTERNAL_LOAD:-0}
 export USE_ATOMICS=${USE_ATOMICS:-1}
