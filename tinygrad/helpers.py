@@ -277,6 +277,8 @@ SCACHE = ContextVar("SCACHE", 1)
 USE_ATOMICS = ContextVar("USE_ATOMICS", 0)
 # don't allow broadcast
 DISALLOW_BROADCAST = ContextVar("DISALLOW_BROADCAST", 1)
+# load from external buffers early in tensor graph
+EAGER_EXTERNAL_LOAD = ContextVar('EAGER_EXTERNAL_LOAD', 1)
 
 @dataclass(frozen=True)
 class Metadata:

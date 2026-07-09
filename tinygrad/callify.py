@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from tinygrad.dtype import dtypes, AddrSpace, PtrDType, ImageDType
 from tinygrad.uop.ops import UOp, UPat, PatternMatcher, Ops, GroupOp, ParamArg, graph_rewrite, track_rewrites
-from tinygrad.helpers import VIZ, pluralize, all_int
+from tinygrad.helpers import VIZ, pluralize, all_int, EAGER_EXTERNAL_LOAD
 
 @dataclass
 class AllocCtx:
@@ -23,7 +23,8 @@ def disk_copy_is_buffer(ctx:AllocCtx, u:UOp):
   if disk_like(u) and u.tag is None:
     ctx.buffer_map[u] = u.empty_like()
     return u.rtag(())
-  # all copies from disk/numpy are realized into a real buffer
+  # all copies from disk/numpy are realized into a real buffer, unless disabled
+  if not EAGER_EXTERNAL_LOAD: return
   from_creation = isinstance(u.src[0].device, str) and u.src[0].device.startswith(("NPY", "DISK", "PYTHON", "TINYFS"))
   if from_creation: return tag_uop(ctx, u)
 
