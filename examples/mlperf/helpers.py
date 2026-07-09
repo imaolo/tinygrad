@@ -3,7 +3,6 @@ from pathlib import Path
 import unicodedata
 from typing import Optional
 import math
-import numpy as np
 import shutil
 from tinygrad.nn import state
 from tinygrad.tensor import Tensor, dtypes

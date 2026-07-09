@@ -1872,6 +1872,7 @@ def train_stable_diffusion():
     t6 = time.perf_counter()
 
 if __name__ == "__main__":
+  import numpy as np
   multiprocessing.set_start_method('spawn')
 
   if getenv("INITMLPERF"): bench_log_manager = WallTimeEvent(BenchEvent.MLPERF_INIT)
