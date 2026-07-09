@@ -1439,10 +1439,11 @@ def train_llama3(llama2_70b_lora:bool=False):
       assert not state_dict, "unconsumed weights"
       print("model load weights peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
     else:
+      # simulate disk loading for NULL device testing
       for param in get_parameters(model):
         if param.device is not None:
-          dev = param.device
           param.replace(param.empty_like())
+          # param.replace(Tensor.empty(*param.shape, dtype=param.dtype, device=f"DISK:DNE_FILE").shard(param.device, param.uop.axis))
   model.quantize()
   print("model quantize peak mem per device: " + ', '.join(f"{dev}: {mem/1e9:.2f} GB" for dev, mem in sorted(GlobalCounters.peak_mem_used_per_device.items())))
 
