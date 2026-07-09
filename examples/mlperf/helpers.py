@@ -2,6 +2,7 @@ from collections import OrderedDict
 from pathlib import Path
 import unicodedata
 from typing import Optional
+import numpy as np
 import math
 import shutil
 from tinygrad.nn import state

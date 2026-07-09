@@ -1871,7 +1871,6 @@ def train_stable_diffusion():
     t6 = time.perf_counter()
 
 if __name__ == "__main__":
-  import numpy as np
   from examples.mlperf.helpers import get_training_state, load_training_state
   multiprocessing.set_start_method('spawn')
 
